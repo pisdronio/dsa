@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyo
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Test audio files (too large for repo)
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.opus
+
+# Generated output files
+*.dtw
+*.png
+output/
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+.directory
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Benchmarks / profiling output
+*.prof
+*.pstats
+benchmarks/results/
+
+# Temporary
+tmp/
+temp/
+*.tmp
