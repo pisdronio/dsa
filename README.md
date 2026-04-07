@@ -201,31 +201,6 @@ for frame in frames[:10]:
 
 ---
 
-## Working with Claude Code
-
-This project is built with [Claude Code](https://claude.ai/code). To continue development in the terminal:
-
-```bash
-# Install Claude Code
-npm install -g @anthropic-ai/claude-code
-
-# Start a session in this repo
-cd dsa
-claude
-
-# Suggested prompts to continue:
-# "implement Step 2: the perceptual quantizer for DSA"
-# "write tests for dsa_analyzer.py"
-# "benchmark DSA against Opus at 12kbps"
-```
-
-The full design context lives in:
-- `RESEARCH.md` — scientific documentation and design decisions
-- `README.md` — this file
-- [digilog-spec](https://github.com/pisdronio/digilog-spec) — the format spec that DSA serves
-
----
-
 ## Scientific context
 
 DSA is developed as a component of the Digilog format — a novel physical audio format that encodes audio as printed colored dot patterns readable by a camera.
