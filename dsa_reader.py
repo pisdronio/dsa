@@ -170,6 +170,23 @@ class DSADiscReader:
         self.ring_width_px  = ((OUTER_AUDIO_MM - INNER_AUDIO_MM) * mm_to_px) / NUM_BANDS
         self.frame_angle    = 2.0 * math.pi / self.n_frames
 
+        # Spiral geometry (set via set_spiral)
+        self.spiral         = False
+        self.frames_per_rev = self.n_frames
+        self.n_revolutions  = 1
+        self.sub_band_px    = self.ring_width_px
+
+    def set_spiral(self, rpm: float) -> None:
+        """Configure spiral reading mode to match dsa_render.py --spiral --rpm."""
+        fps_actual          = self.n_frames / self.layout['duration_s']
+        self.frames_per_rev = max(1, round(fps_actual / (rpm / 60.0)))
+        self.n_revolutions  = self.n_frames // self.frames_per_rev
+        self.sub_band_px    = self.ring_width_px / self.n_revolutions
+        self.spiral         = True
+        angle_per_lf        = 2.0 * math.pi / self.frames_per_rev
+        print(f"  Spiral mode: {rpm} RPM, {self.frames_per_rev} frames/rev, "
+              f"{self.n_revolutions} revolutions, sub-band {self.sub_band_px:.2f}px")
+
     def read(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Read all (frame, band) cells from the disc image.
@@ -193,17 +210,27 @@ class DSADiscReader:
         print(f"  Reading {n_frames} × {n_bands} cells ...", end=' ', flush=True)
 
         for b in range(n_bands):
-            # Ring midpoint radius
-            r_px = self.inner_audio_px + (b + 0.5) * self.ring_width_px
-
             ca_name, cb_name = self.bp_map[b]
             ca = PALETTE[ca_name]
             cb = PALETTE[cb_name]
 
             for fi in range(n_frames):
-                # Sample left (25%) and right (75%) within arc
-                theta_left  = (fi + 0.25) * self.frame_angle
-                theta_right = (fi + 0.75) * self.frame_angle
+                if not self.spiral:
+                    # Single-revolution: all frames at band midpoint radius
+                    r_px        = self.inner_audio_px + (b + 0.5) * self.ring_width_px
+                    theta_left  = (fi + 0.25) * self.frame_angle
+                    theta_right = (fi + 0.75) * self.frame_angle
+                else:
+                    # Spiral: revolution determines sub-band radius,
+                    #         local frame determines angle within revolution
+                    rev         = fi // self.frames_per_rev
+                    rev         = min(rev, self.n_revolutions - 1)
+                    f_local     = fi % self.frames_per_rev
+                    r_outer_b   = self.inner_audio_px + (b + 1) * self.ring_width_px
+                    r_px        = r_outer_b - (rev + 0.5) * self.sub_band_px
+                    angle_lf    = 2.0 * math.pi / self.frames_per_rev
+                    theta_left  = (f_local + 0.25) * angle_lf
+                    theta_right = (f_local + 0.75) * angle_lf
 
                 c_left  = _sample_pixel(img, ctr, r_px, theta_left)
                 c_right = _sample_pixel(img, ctr, r_px, theta_right)
@@ -302,12 +329,16 @@ def main():
         description='Read a DSA disc image and extract gradient encoding data')
     p.add_argument('image',         help='Disc PNG (from dsa_render.py)')
     p.add_argument('layout',        help='.disc.json layout file')
-    p.add_argument('--decode',      type=str, default=None,
+    p.add_argument('--decode',      type=str,   default=None,
                    help='.dsa bitstream to decode with read confidence')
-    p.add_argument('--out',         type=str, default=None,
+    p.add_argument('--out',         type=str,   default=None,
                    help='Output WAV path (requires --decode)')
     p.add_argument('--confidence-map', type=str, default=None, metavar='PATH',
                    help='Save confidence map PNG to PATH')
+    p.add_argument('--spiral',      action='store_true',
+                   help='Read spiral disc geometry (must match --spiral used during render)')
+    p.add_argument('--rpm',         type=float, default=33.0,
+                   help='RPM used when rendering the spiral disc (default: 33)')
     args = p.parse_args()
 
     print()
@@ -317,6 +348,8 @@ def main():
     print()
 
     reader = DSADiscReader(args.image, args.layout)
+    if args.spiral:
+        reader.set_spiral(args.rpm)
 
     print()
     steep_read, dir_read, conf_frame, alpha = reader.read()

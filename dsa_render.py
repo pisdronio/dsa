@@ -69,7 +69,8 @@ PALETTE: dict[str, np.ndarray] = {
 }
 
 
-def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
+def render_disc(layout_path: str, dpi: int = 300, out_path: str = None,
+                spiral: bool = False, rpm: float = 33.0) -> str:
     """
     Render a .disc.json layout to a PNG disc image.
 
@@ -147,9 +148,42 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
 
     print(f"  Canvas:    {disc_px}×{disc_px} px  ({disc_px/dpi:.2f}\" diameter at {dpi} DPI)")
     print(f"  Ring width: {ring_width_px/mm_to_px:.2f}mm  ({ring_width_px:.1f}px)")
-    print(f"  Arc width:  {arc_w_outer_mm:.3f}mm outer  /  {arc_w_inner_mm:.3f}mm inner")
-    if arc_w_outer_mm < 0.3:
-        print("  WARNING: arc width < 0.3mm — may be too small to print/read at this DPI")
+    if not spiral:
+        print(f"  Arc width:  {arc_w_outer_mm:.3f}mm outer  /  {arc_w_inner_mm:.3f}mm inner  (single revolution)")
+        if arc_w_inner_mm < 0.3:
+            print("  WARNING: inner arc < 0.3mm — may be too small to print/read at this DPI")
+
+    # ── Spiral geometry ────────────────────────────────────────────────────────
+    frames_per_rev = 1     # placeholders overwritten in spiral mode
+    n_revolutions  = 1
+    sub_band_px    = ring_width_px
+
+    if spiral:
+        if rpm < 1.0:
+            sys.exit("  ERROR: --rpm must be >= 1.0")
+        fps_actual     = n_frames / duration_s
+        frames_per_rev = max(1, round(fps_actual / (rpm / 60.0)))
+        n_revolutions  = n_frames // frames_per_rev
+        if n_revolutions < 1:
+            sys.exit(f"  ERROR: n_frames={n_frames} < frames_per_rev={frames_per_rev}. "
+                     f"Audio too short for spiral at {rpm} RPM.")
+        leftover = n_frames - n_revolutions * frames_per_rev
+        sub_band_px  = ring_width_px / n_revolutions
+        sub_band_mm  = sub_band_px / mm_to_px
+        arc_spiral_outer_mm = (2 * math.pi * outer_audio_px / frames_per_rev) / mm_to_px
+        arc_spiral_inner_mm = (2 * math.pi * inner_audio_px / frames_per_rev) / mm_to_px
+        print(f"  Mode:      SPIRAL  {rpm} RPM")
+        print(f"  Frames/rev:{frames_per_rev}  |  Revolutions: {n_revolutions}"
+              + (f"  (+{leftover} leftover frames)" if leftover else ""))
+        print(f"  Arc width:  {arc_spiral_outer_mm:.2f}mm outer  /  {arc_spiral_inner_mm:.2f}mm inner")
+        print(f"  Sub-band:  {sub_band_mm:.3f}mm  ({sub_band_px:.2f}px/revolution)")
+        if sub_band_px < 4.0:
+            safe_rev = int(ring_width_px / 4.0)
+            safe_rpm = round((fps_actual / (n_frames / safe_rev)) * 60) if safe_rev > 0 else 0
+            print(f"  WARNING: sub-band {sub_band_px:.2f}px < 4px at {dpi} DPI — "
+                  f"revolutions too dense to resolve. "
+                  f"Max readable revolutions at {dpi} DPI: {safe_rev} (~{safe_rpm} RPM). "
+                  f"Consider higher DPI or lower --rpm.")
 
     # ── Pixel polar coordinates ───────────────────────────────────────────────
     print("  Computing pixel geometry...", end=' ', flush=True)
@@ -178,10 +212,31 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
     np.clip(b_idx, 0, n_bands - 1, out=b_idx)
 
     # Frame index and arc position per pixel
-    frame_angle = 2.0 * math.pi / n_frames
-    f_idx       = (theta / frame_angle).astype(np.int32)
-    np.clip(f_idx, 0, n_frames - 1, out=f_idx)
-    arc_pos     = (theta % frame_angle) / frame_angle  # 0..1 within arc
+    if not spiral:
+        # ── Single-revolution mode ─────────────────────────────────────────────
+        frame_angle = 2.0 * math.pi / n_frames
+        f_idx       = (theta / frame_angle).astype(np.int32)
+        np.clip(f_idx, 0, n_frames - 1, out=f_idx)
+        arc_pos     = (theta % frame_angle) / frame_angle  # 0..1 within arc
+    else:
+        # ── Spiral mode ────────────────────────────────────────────────────────
+        # Each band's radial zone is subdivided into n_revolutions tracks.
+        # Revolution 0 = outermost within the band = start of audio (vinyl-style).
+        # r_from_outer = distance inward from the outer edge of the band.
+        outer_edges  = (inner_audio_px
+                        + (b_idx.astype(np.float32) + 1.0) * ring_width_px)
+        r_from_outer = outer_edges - r
+        rev_idx      = (r_from_outer / sub_band_px).astype(np.int32)
+        np.clip(rev_idx, 0, n_revolutions - 1, out=rev_idx)
+
+        angle_per_lf  = 2.0 * math.pi / frames_per_rev
+        f_local_float = theta / angle_per_lf
+        f_local_int   = f_local_float.astype(np.int32)
+        np.clip(f_local_int, 0, frames_per_rev - 1, out=f_local_int)
+
+        f_idx   = rev_idx * frames_per_rev + f_local_int
+        np.clip(f_idx, 0, n_frames - 1, out=f_idx)
+        arc_pos = f_local_float - f_local_int.astype(np.float32)  # fractional part within arc
 
     # Extract audio pixels
     ay, ax   = np.where(in_audio)
@@ -243,7 +298,11 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
 
     # ── Save ──────────────────────────────────────────────────────────────────
     if out_path is None:
-        out_path = str(Path(layout_path).with_suffix('.png'))
+        base = str(Path(layout_path).with_suffix('').with_suffix(''))  # strip .disc.json
+        if spiral:
+            out_path = base + f'.spiral_{int(rpm)}rpm.png'
+        else:
+            out_path = str(Path(layout_path).with_suffix('.png'))
 
     print(f"  Saving → {out_path} ...", end=' ', flush=True)
     pil_img.save(out_path, dpi=(dpi, dpi))
@@ -258,10 +317,14 @@ def main():
         description='Render a DSA .disc.json layout to a printable disc PNG')
     p.add_argument('layout',
                    help='Path to .disc.json file (from dsa_cli.py disc)')
-    p.add_argument('--dpi',  type=int, default=300,
-                   help='Output resolution in DPI (default: 300, use 600 for high-res)')
-    p.add_argument('--out',  type=str, default=None,
-                   help='Output PNG path (default: <layout>.png)')
+    p.add_argument('--dpi',    type=int,   default=300,
+                   help='Output resolution in DPI (default: 300)')
+    p.add_argument('--out',    type=str,   default=None,
+                   help='Output PNG path')
+    p.add_argument('--spiral', action='store_true',
+                   help='Spiral geometry: multiple revolutions per band (vinyl-style)')
+    p.add_argument('--rpm',    type=float, default=33.0,
+                   help='Disc speed for spiral mode in RPM (default: 33)')
     args = p.parse_args()
 
     print()
@@ -272,7 +335,8 @@ def main():
     print(f"  DPI:     {args.dpi}")
     print()
 
-    out = render_disc(args.layout, dpi=args.dpi, out_path=args.out)
+    out = render_disc(args.layout, dpi=args.dpi, out_path=args.out,
+                      spiral=args.spiral, rpm=args.rpm)
 
     print()
     print("  Scan the groove.")

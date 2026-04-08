@@ -82,10 +82,12 @@ def _band_color(steepness: float, direction: int,
 
 
 def render_strip(layout_path: str,
-                 cell_h: int    = 8,
+                 cell_h: int      = 8,
                  frame_start: int = 0,
                  frame_end: int   = None,
-                 out_path: str    = None) -> str:
+                 out_path: str    = None,
+                 fiducials: bool  = False,
+                 strip_dpi: int   = 300) -> str:
     """
     Render a .disc.json to a flat strip PNG.
 
@@ -196,9 +198,58 @@ def render_strip(layout_path: str,
         draw.line([(x, 0), (x, img_h)], fill=(50, 50, 50), width=1)
         t += int(frames_per_sec)
 
+    # ── Fiducial registration marks ───────────────────────────────────────────
+    if fiducials:
+        px_per_mm   = strip_dpi / 25.4
+        corner_mm   = 5.0
+        corner_px   = int(round(corner_mm * px_per_mm))
+        scalebar_mm = 10.0
+        scalebar_px = int(round(scalebar_mm * px_per_mm))
+        scalebar_h  = max(4, int(round(1.0 * px_per_mm)))
+        border_px   = max(20, scalebar_h + 8)
+
+        # Clamp scale bar width so it fits between left corner and right corner
+        old_w, old_h = pil_img.size
+        new_w = old_w + 2 * border_px
+        new_h = old_h + 2 * border_px
+        scalebar_px = min(scalebar_px, new_w - 2 * corner_px - 8)
+
+        # Expand canvas
+        bordered = Image.new('RGB', (new_w, new_h), (255, 255, 255))
+        bordered.paste(pil_img, (border_px, border_px))
+        draw2 = ImageDraw.Draw(bordered)
+
+        # Corner squares (5mm, at each corner — extend into border region)
+        cp = corner_px
+        draw2.rectangle([0,          0,          cp - 1,      cp - 1     ], fill=(0, 0, 0))
+        draw2.rectangle([new_w - cp, 0,          new_w - 1,   cp - 1     ], fill=(0, 0, 0))
+        draw2.rectangle([0,          new_h - cp, cp - 1,      new_h - 1  ], fill=(0, 0, 0))
+        draw2.rectangle([new_w - cp, new_h - cp, new_w - 1,   new_h - 1  ], fill=(0, 0, 0))
+
+        # 10mm scale bar in bottom border, left of center
+        bar_x0 = cp + 4
+        bar_x1 = bar_x0 + scalebar_px
+        bar_y  = new_h - border_px + (border_px - scalebar_h) // 2
+        draw2.rectangle([bar_x0, bar_y, bar_x1, bar_y + scalebar_h - 1], fill=(0, 0, 0))
+        # End-cap ticks
+        tick_ext = scalebar_h
+        draw2.line([(bar_x0, bar_y - tick_ext), (bar_x0, bar_y + scalebar_h + tick_ext)],
+                   fill=(0, 0, 0), width=2)
+        draw2.line([(bar_x1, bar_y - tick_ext), (bar_x1, bar_y + scalebar_h + tick_ext)],
+                   fill=(0, 0, 0), width=2)
+
+        pil_img = bordered
+        phys_w  = old_w / px_per_mm
+        phys_h  = old_h / px_per_mm
+        print(f"  Fiducials: border={border_px}px, corners={corner_mm:.0f}mm ({corner_px}px), "
+              f"scale bar={scalebar_mm:.0f}mm — assume {strip_dpi} DPI when printing")
+        print(f"  Physical strip size: {phys_w:.0f}×{phys_h:.0f}mm "
+              f"({phys_w/10:.1f}×{phys_h/10:.1f}cm) at {strip_dpi} DPI")
+
     # ── Save ──────────────────────────────────────────────────────────────────
     if out_path is None:
-        out_path = str(Path(layout_path).with_suffix('.strip.png'))
+        suffix   = '.fiducials.strip.png' if fiducials else '.strip.png'
+        out_path = str(Path(layout_path).with_suffix('').with_suffix('')) + suffix
 
     print(f"  Saving → {out_path} ...", end=' ', flush=True)
     pil_img.save(out_path)
@@ -218,8 +269,12 @@ def main():
                    help='First frame to render (default: 0)')
     p.add_argument('--end',     type=int, default=None,
                    help='Last frame (exclusive); default: all')
-    p.add_argument('--out',     type=str, default=None,
+    p.add_argument('--out',       type=str,  default=None,
                    help='Output PNG path')
+    p.add_argument('--fiducials', action='store_true',
+                   help='Add corner registration marks and 10mm scale bar for camera reader')
+    p.add_argument('--strip-dpi', type=int,  default=300,
+                   help='Physical DPI to assume when printing (default: 300)')
     args = p.parse_args()
 
     print()
@@ -233,7 +288,9 @@ def main():
                        cell_h=args.height,
                        frame_start=args.start,
                        frame_end=args.end,
-                       out_path=args.out)
+                       out_path=args.out,
+                       fiducials=args.fiducials,
+                       strip_dpi=args.strip_dpi)
     print()
     print("  L0 (bass):  bottom rows  — black/white/yellow/cyan")
     print("  L1 (mid):   middle rows  — red/cyan, blue/yellow, green/purple")
