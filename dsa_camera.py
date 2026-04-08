@@ -317,9 +317,14 @@ def _bilinear(arr: np.ndarray, x: float, y: float) -> np.ndarray:
 def read_strip(warped: np.ndarray,
                layout: dict,
                cell_h: int,
-               border_px: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+               border_px: int,
+               cell_w: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Sample the warped strip image and return read values.
+
+    cell_w : pixel width per frame column (must match dsa_strip.py --cell-w).
+             1 = visualization strip (direction undetectable, steepness also lost).
+             ≥4 = readable gradient strip — samples at 25% and 75% of cell_w.
 
     Returns
     -------
@@ -337,20 +342,24 @@ def read_strip(warped: np.ndarray,
     dir_read   = np.zeros((n_frames, n_bands), dtype=np.int8)
     conf_frame = np.zeros((n_frames, n_bands), dtype=np.float64)
 
-    print(f"  Sampling {n_frames} × {n_bands} cells ...", end=' ', flush=True)
+    if cell_w == 1:
+        print(f"  WARNING: cell_w=1 (visualization strip) — direction is not encoded. "
+              f"Use --cell-w ≥4 with dsa_strip.py for readable strips.")
+    print(f"  Sampling {n_frames} × {n_bands} cells  (cell_w={cell_w}px) ...",
+          end=' ', flush=True)
 
     for b in range(n_bands):
         ca_name, cb_name = bp_map[b]
         ca = PALETTE[ca_name]
         cb = PALETTE[cb_name]
 
-        # Two sample points per cell: left quarter and right quarter
+        # Two sample points per cell: left quarter and right quarter of cell_w
         y = _cell_sample_y(b, n_bands, cell_h, border_px)
 
         for fi in range(n_frames):
-            x_base = border_px + fi
-            x_left  = x_base + 0.25
-            x_right = x_base + 0.75
+            x_base  = border_px + fi * cell_w
+            x_left  = x_base + 0.25 * cell_w
+            x_right = x_base + 0.75 * cell_w
 
             c_left  = _bilinear(warped, x_left,  y)
             c_right = _bilinear(warped, x_right, y)
@@ -575,6 +584,10 @@ def main():
 
     p.add_argument('--cell-h',   type=int,   default=8,
                    help='Pixel height per band row used when printing (default: 8)')
+    p.add_argument('--cell-w',   type=int,   default=1,
+                   help='Pixel width per frame column (default: 1). '
+                        'Must match --cell-w used with dsa_strip.py. '
+                        'Set ≥4 for readable gradient strips.')
     p.add_argument('--border',   type=int,   default=None,
                    help='Border width in pixels used by dsa_strip.py --fiducials '
                         '(default: auto — max(20, scalebar_h+8) at --strip-dpi)')
@@ -637,13 +650,14 @@ def main():
         border_px   = max(20, scalebar_h + 8)
 
     cell_h = args.cell_h
-    print(f"  Strip params: cell_h={cell_h}px, border={border_px}px, "
-          f"dpi={args.strip_dpi}")
+    cell_w = args.cell_w
+    print(f"  Strip params: cell_h={cell_h}px, cell_w={cell_w}px, "
+          f"border={border_px}px, dpi={args.strip_dpi}")
 
     # Canonical dimensions (must match bordered image from dsa_strip.py)
     content_h  = n_bands * cell_h + 2 * SEP_PX
-    canon_w    = n_frames   + 2 * border_px
-    canon_h    = content_h  + 2 * border_px
+    canon_w    = n_frames * cell_w + 2 * border_px
+    canon_h    = content_h         + 2 * border_px
     print(f"  Canonical size: {canon_w}×{canon_h}px")
 
     # ── Find corners ──────────────────────────────────────────────────────────
@@ -715,7 +729,7 @@ def main():
 
     print()
     steep_read, dir_read, conf_frame, alpha = read_strip(
-        warped, layout, cell_h, border_px)
+        warped, layout, cell_h, border_px, cell_w=args.cell_w)
 
     # ── Accuracy report ───────────────────────────────────────────────────────
 

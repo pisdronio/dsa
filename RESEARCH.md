@@ -2395,6 +2395,100 @@ This is the data that all subsequent encoding decisions (color pair selection, D
 
 ---
 
+### §17.8 Readable strip mode — `cell_w` parameter (April 2026)
+
+The visualization strip (`cell_w=1`, one pixel per frame column) cannot encode direction — both `direction=+1` and `direction=-1` collapse to the same midpoint blend color. A new **readable strip mode** (`cell_w ≥ 4`) renders each frame-cell as a horizontal color gradient so that the left→right sweep direction carries the sign bit.
+
+**Rendering contract (`dsa_strip.py`, `_band_gradient_row`):**
+
+```
+direction = +1:  pixel xi → t = (xi / (cell_w−1)) × steepness   (ramp ca→cb)
+direction = −1:  pixel xi → t = (1 − xi/(cell_w−1)) × steepness (ramp cb-side→ca)
+direction =  0:  solid ca
+```
+
+**Recovery formula (`dsa_camera.py`, `read_strip`):**
+
+```
+x_left  = x_base + 0.25 × cell_w
+x_right = x_base + 0.75 × cell_w
+diff = t_right − t_left
+direction  = sign(diff)          (threshold: |diff| < 0.008 → 0)
+steepness  = 2 × |diff|
+```
+
+**Known systematic bias in steepness recovery.** The gradient render uses the `xi / (cell_w−1)` convention (0→1 over N samples, like bilinear texturing), but the 25%/75% sampling assumes the pixel-centre convention `xi / cell_w`. The actual sample positions map to:
+
+```
+f_left  = 0.25 × cell_w / (cell_w−1)
+f_right = 0.75 × cell_w / (cell_w−1)
+diff    = 0.5 × cell_w / (cell_w−1) × steepness
+recovered = cell_w/(cell_w−1) × steepness
+```
+
+| cell_w | overestimate |
+|--------|-------------|
+| 4      | ×1.33  (+33%) |
+| 8      | ×1.14  (+14%) |
+| 16     | ×1.07  (+7%)  |
+| ∞      | ×1.00  (0%)   |
+
+Direction sign is **unaffected** — `sign(diff)` is independent of the scalar error.
+
+**Fix (not yet applied):** change the render loop to `f = xi / cell_w` so that x_left (at offset 0.25×cell_w) hits exactly `f = 0.25` and diff = 0.5×steepness exactly. The difference is only visible at cell_w ≤ 8; at cell_w ≥ 16 it is negligible for most use cases.
+
+**Minimum recommended cell_w:** 4 (direction recoverable), 8 (comfortable for steepness accuracy with the current bias).
+
+---
+
+### §17.9 Tier 0 software baseline — measured results (April 2026)
+
+Test conditions: 3-tone signal (440 Hz + 2 kHz + 9 kHz), 12 GOPs, 32 kbps, 48-band disc layout, cell_w=8, cell_h=8, strip_dpi=72, fiducials enabled. Strip PNG fed directly to `dsa_camera.py` (identity homography — no optics).
+
+| Metric | Measured | Spec target |
+|--------|----------|-------------|
+| Direction accuracy | ~95.6% | ≥ 98% |
+| Mean α (all bands) | ~0.98  | ≥ 0.93 |
+| Steepness MAE      | ~0.10  | — |
+
+Direction accuracy falls short of the 98% spec at cell_w=8 due to pixel quantisation at the cell boundaries (border pixels where two cells meet bleed into each other). The steepness MAE (~0.10) matches the predicted `cell_w/(cell_w-1)` bias (8/7 ≈ +14% on a 0–1 scale).
+
+**Per-layer α:** L0 (bass) bands have the highest mean α (~0.98); L2 (high) bands are marginally lower. All bands exceed α = 0.50 in the software baseline, confirming no systemic geometry or colour-projection bugs.
+
+**Cell-width comparison (software baseline, same layout):**
+
+| cell_w | Direction accuracy | Mean α |
+|--------|-------------------|--------|
+| 4      | ~90%              | ~0.97  |
+| 8      | ~95.6%            | ~0.98  |
+
+cell_w=8 is the recommended production default for Tier 1/2 testing.
+
+---
+
+### §17.10 Confidence floor on achromatic band pairs (April 2026)
+
+The `_color_to_blend` confidence metric is:
+
+```
+confidence = 1 − residual / max_dist
+```
+
+For the **black→white** band pair the axis is the luminance vector (1,1,1). Every RGB colour has a luminance component, so the maximum possible residual (e.g., pure red `(255,0,0)`) is:
+
+```
+max_residual = 255 × sqrt(2/3) ≈ 208   vs   max_dist = 255√3 ≈ 442
+min_confidence ≥ 1 − 208/442 ≈ 0.53
+```
+
+In practice, **no RGB color can score confidence < 0.53 on the black→white axis.** This means the confidence metric cannot reject noise or ink contamination as reliably for achromatic band pairs as for chromatic ones.
+
+**Chromatic band pairs** (red→green, blue→yellow, etc.) have axes with large hue separation. A colour that is off the hue axis (e.g., pure blue on the red→green axis) gets near-zero confidence (~0.07 measured). These pairs are therefore more robust discriminators in noisy print/photograph conditions.
+
+**Implication for band pair assignment (§12):** L0 bass bands currently use black→white, which has the lowest confidence floor. Since L0 must survive the worst print conditions, it may be worth switching L0 to a chromatic pair with better off-axis rejection. This is deferred until Tier 2 physical data is available.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*

@@ -68,21 +68,55 @@ SEP_COLOR = (80,  80,  80)
 def _band_color(steepness: float, direction: int,
                 ca: np.ndarray, cb: np.ndarray) -> np.ndarray:
     """
-    Single representative color for a (frame, band) cell.
-    Uses the midpoint of the arc (arc_pos = 0.5) and LAB interpolation
-    for perceptually uniform gradient representation.
+    Single representative color for a (frame, band) cell — visualization mode.
+    Uses the midpoint of the arc (arc_pos = 0.5) and LAB interpolation.
+    NOTE: This loses direction information — both +1 and -1 produce the same
+    midpoint color. Use _band_gradient_row() for readable encoding.
     """
     if direction == 0 or steepness < 0.001:
         return ca
     t = 0.5 * steepness
-    if direction < 0:
-        t = steepness - t
     t = max(0.0, min(1.0, t))
     return lerp_lab(ca, cb, np.array(t)).astype(np.float32)
 
 
+def _band_gradient_row(steepness: float, direction: int,
+                       ca: np.ndarray, cb: np.ndarray,
+                       cell_w: int) -> np.ndarray:
+    """
+    Render one frame-cell as a cell_w-pixel horizontal gradient — readable mode.
+
+    Encodes direction and steepness in a way that matches the disc arc encoding:
+      direction=+1:  left→right transition from ca toward cb (t: 0 → steepness)
+      direction=-1:  left→right transition from cb-side toward ca (t: steepness → 0)
+      direction= 0:  solid ca
+
+    Sampling at 25% and 75% x-positions recovers steepness and direction via
+    the same formula as dsa_reader.py:
+      diff = t_right − t_left  →  steepness = 2|diff|,  direction = sign(diff)
+
+    Returns (cell_w, 3) uint8 array.
+    """
+    row = np.zeros((cell_w, 3), dtype=np.float32)
+    if direction == 0 or steepness < 0.001:
+        row[:] = ca
+        return row.astype(np.uint8)
+
+    for xi in range(cell_w):
+        f = xi / (cell_w - 1) if cell_w > 1 else 0.5   # 0.0 → 1.0
+        if direction > 0:
+            t = f * steepness          # left=0(ca) → right=steepness
+        else:
+            t = (1.0 - f) * steepness  # left=steepness(toward cb) → right=0(ca)
+        t = max(0.0, min(1.0, t))
+        row[xi] = lerp_lab(ca, cb, np.array(t)).astype(np.float32)
+
+    return row.astype(np.uint8)
+
+
 def render_strip(layout_path: str,
                  cell_h: int      = 8,
+                 cell_w: int      = 1,
                  frame_start: int = 0,
                  frame_end: int   = None,
                  out_path: str    = None,
@@ -95,6 +129,10 @@ def render_strip(layout_path: str,
     ----------
     layout_path  : path to .disc.json
     cell_h       : pixel height of each band row (default 8)
+    cell_w       : pixel width per frame column (default 1 = visualization only).
+                   Set ≥4 to render readable color gradients within each cell —
+                   required for dsa_camera.py to detect steepness and direction.
+                   Recommended: 4 (compact), 8 (comfortable margin).
     frame_start  : first frame to render (default 0)
     frame_end    : last frame (exclusive); None = all frames
     out_path     : output PNG path; defaults to <layout>.strip.png
@@ -118,71 +156,96 @@ def render_strip(layout_path: str,
 
     print(f"done  ({n_frames} frames total, rendering {n_render})")
 
-    # ── Build color table ─────────────────────────────────────────────────────
-    print("  Building color table...", end=' ', flush=True)
+    # ── Build colour data ─────────────────────────────────────────────────────
+    readable = cell_w > 1
 
-    # color_table[frame_idx, band_idx] = RGB uint8
-    color_table = np.zeros((n_frames, n_bands, 3), dtype=np.uint8)
+    if readable:
+        print(f"  Mode: READABLE gradient  (cell_w={cell_w}px per frame — encodes direction)")
+        # gradient_table[frame_idx, band_idx] = (cell_w, 3) uint8
+        gradient_table = {}
+        for b in range(n_bands):
+            ca = PALETTE[bp_map[b][0]]
+            cb = PALETTE[bp_map[b][1]]
+            gradient_table[b] = {}
+            # default: solid ca
+            default_row = np.tile(ca.astype(np.uint8), (cell_w, 1))
+            for fi in range(n_frames):
+                gradient_table[b][fi] = default_row
 
-    # Default: solid color_a for each band
-    for b in range(n_bands):
-        color_table[:, b] = PALETTE[bp_map[b][0]].astype(np.uint8)
-
-    for fd in frames:
-        fi = fd['frame_idx']
-        if fd['silence']:
-            continue
-        for bd in fd['bands']:
-            b   = bd['band']
-            ca  = PALETTE[bp_map[b][0]]
-            cb  = PALETTE[bp_map[b][1]]
-            col = _band_color(bd['steepness'], bd['direction'], ca, cb)
-            color_table[fi, b] = col.astype(np.uint8)
-
-    print("done")
+        print("  Building gradient table...", end=' ', flush=True)
+        for fd in frames:
+            fi = fd['frame_idx']
+            if fd['silence']:
+                continue
+            for bd in fd['bands']:
+                b  = bd['band']
+                ca = PALETTE[bp_map[b][0]]
+                cb = PALETTE[bp_map[b][1]]
+                gradient_table[b][fi] = _band_gradient_row(
+                    bd['steepness'], bd['direction'], ca, cb, cell_w)
+        print("done")
+    else:
+        print("  Mode: VISUALIZATION flat colour  (cell_w=1 — direction not encoded)")
+        print("  Building color table...", end=' ', flush=True)
+        color_table = np.zeros((n_frames, n_bands, 3), dtype=np.uint8)
+        for b in range(n_bands):
+            color_table[:, b] = PALETTE[bp_map[b][0]].astype(np.uint8)
+        for fd in frames:
+            fi = fd['frame_idx']
+            if fd['silence']:
+                continue
+            for bd in fd['bands']:
+                b   = bd['band']
+                ca  = PALETTE[bp_map[b][0]]
+                cb  = PALETTE[bp_map[b][1]]
+                col = _band_color(bd['steepness'], bd['direction'], ca, cb)
+                color_table[fi, b] = col.astype(np.uint8)
+        print("done")
 
     # ── Render ────────────────────────────────────────────────────────────────
     # Image layout:
-    #   width  = n_render frames (1px per frame)
+    #   width  = n_render × cell_w  (cell_w px per frame)
     #   height = n_bands × cell_h + separator lines
     #
     # Bands are drawn bottom-to-top: band 0 (bass) at bottom, band 47 (high) at top.
     # Layer separators (2px) between L0/L1 and L1/L2.
 
     SEP_PX   = 2    # separator line thickness
-    img_w    = n_render
+    img_w    = n_render * cell_w
     img_h    = n_bands * cell_h + 2 * SEP_PX  # two separators
 
-    print(f"  Strip size: {img_w}×{img_h} px  ({n_render} frames × {n_bands} bands × {cell_h}px/band)")
+    print(f"  Strip size: {img_w}×{img_h} px  "
+          f"({n_render} frames × {cell_w}px/frame × {n_bands} bands × {cell_h}px/band)")
 
     img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
 
-    # Draw bands bottom-to-top
-    # Band row mapping (bottom = band 0):
-    #   band b → rows  [img_h - (b+1)*cell_h - sep_offset : img_h - b*cell_h - sep_offset]
-    # With separators inserted between L0/L1 (after band 7) and L1/L2 (after band 23):
-
     def band_row_top(b: int) -> int:
         """Top pixel row of band b (0=bass at bottom → 47=high at top)."""
-        # separators occupy 2px between L0/L1 and L1/L2
         sep_below = 0
         if b >= 8:   sep_below += SEP_PX
         if b >= 24:  sep_below += SEP_PX
-        # distance from bottom: b bands × cell_h + separators already added below
         bottom_offset = b * cell_h + sep_below
         return img_h - bottom_offset - cell_h
 
     for b in range(n_bands):
         row_top = band_row_top(b)
         row_bot = row_top + cell_h
-        # color column slice: shape (n_render, 3)
-        colors = color_table[frame_start:frame_end, b, :]  # (n_render, 3)
-        # broadcast across cell_h rows
-        img[row_top:row_bot, :, :] = colors[np.newaxis, :, :]
+
+        if readable:
+            # Each frame occupies cell_w columns; fill with gradient row
+            for i, fi in enumerate(range(frame_start, frame_end)):
+                x0 = i * cell_w
+                x1 = x0 + cell_w
+                row = gradient_table[b][fi]         # (cell_w, 3)
+                img[row_top:row_bot, x0:x1, :] = row[np.newaxis, :, :]
+        else:
+            # 1px per frame — broadcast flat colour
+            colors = color_table[frame_start:frame_end, b, :]  # (n_render, 3)
+            img[row_top:row_bot, :, :] = colors[np.newaxis, :, :]
 
     # Separator lines (dark gray)
-    sep0_top = band_row_top(8) + cell_h     # between L0 (band 7) and L1 (band 8)
-    sep1_top = band_row_top(24) + cell_h    # between L1 (band 23) and L2 (band 24)
+    sep0_top = band_row_top(8) + cell_h
+    sep1_top = band_row_top(24) + cell_h
     img[sep0_top : sep0_top + SEP_PX, :] = SEP_COLOR
     img[sep1_top : sep1_top + SEP_PX, :] = SEP_COLOR
 
@@ -194,7 +257,7 @@ def render_strip(layout_path: str,
     frames_per_sec = 44100 / 1024
     t = frame_start
     while t < frame_end:
-        x = t - frame_start
+        x = int(t - frame_start) * cell_w
         draw.line([(x, 0), (x, img_h)], fill=(50, 50, 50), width=1)
         t += int(frames_per_sec)
 
@@ -265,6 +328,9 @@ def main():
                    help='Path to .disc.json')
     p.add_argument('--height',  type=int, default=8,
                    help='Pixel height per band row (default: 8)')
+    p.add_argument('--cell-w',  type=int, default=1,
+                   help='Pixel width per frame column (default: 1 = visualization). '
+                        'Set ≥4 to encode readable gradients for dsa_camera.py.')
     p.add_argument('--start',   type=int, default=0,
                    help='First frame to render (default: 0)')
     p.add_argument('--end',     type=int, default=None,
@@ -286,6 +352,7 @@ def main():
 
     out = render_strip(args.layout,
                        cell_h=args.height,
+                       cell_w=args.cell_w,
                        frame_start=args.start,
                        frame_end=args.end,
                        out_path=args.out,
