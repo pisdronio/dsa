@@ -152,13 +152,17 @@ def _scale_to_budget(
     bit_budget: float,
 ) -> np.ndarray:
     """
-    Scale step sizes upward (reducing quality) until estimated bit cost fits
-    within bit_budget * ENTROPY_FACTOR.
+    Bidirectional rate-distortion step scaler.
 
-    Degrades layers in priority order — L2 first (outer disc rings, high freq),
-    L1 second, L0 last (inner rings, always-readable bass layer).
+    Phase 1 — over budget: scale steps UP (reduce quality) layer by layer,
+    degrading L2 first, L1 second, L0 last.
 
-    Uses binary search per layer for speed.
+    Phase 2 — under budget: scale steps DOWN (improve quality) uniformly
+    across all bands to consume the remaining bit budget. This fixes the
+    SNR plateau at high bitrates — masking-threshold steps are a quality
+    floor, not a ceiling. Surplus bits make quantization finer.
+
+    Both phases use binary search (24 iterations → sub-ppm precision).
     """
     steps      = steps.copy()
     eff_budget = bit_budget * ENTROPY_FACTOR
@@ -169,11 +173,12 @@ def _scale_to_budget(
         list(range(0, L0)),                 # L0 — most protected
     ]
 
+    # ── Phase 1: over budget — scale steps up layer by layer ─────────────────
     for band_indices in layer_ranges:
         if _total_bits(coeffs_bands, steps) <= eff_budget:
             break
         lo_s, hi_s = 1.0, 65536.0
-        for _ in range(24):                 # 24 iterations → sub-ppm precision
+        for _ in range(24):
             mid   = (lo_s + hi_s) / 2.0
             trial = steps.copy()
             for b in band_indices:
@@ -184,6 +189,35 @@ def _scale_to_budget(
                 lo_s = mid
         for b in band_indices:
             steps[b] *= hi_s
+
+    # ── Phase 2: under budget — scale steps down uniformly ───────────────────
+    # Only act when there is meaningful surplus (>5% of budget unused).
+    # A single global binary search finds the finest uniform scale factor
+    # that keeps total cost within eff_budget.
+    #
+    # Lower bound: prevent MAX_QUANT saturation. If a step becomes so small
+    # that max(|coeffs[b]|) / step[b] > MAX_QUANT, the codec clips the
+    # quantized value, destroying SNR. Compute the minimum safe scale as
+    # max over all bands of (peak_coeff / (MAX_QUANT * step)).
+    current_bits = _total_bits(coeffs_bands, steps)
+    if current_bits < eff_budget * 0.95:
+        min_scale = 1e-6
+        for b, cb in enumerate(coeffs_bands):
+            if len(cb) > 0 and steps[b] > 0:
+                peak = float(np.max(np.abs(cb)))
+                if peak > 0:
+                    min_scale = max(min_scale, peak / (MAX_QUANT * steps[b]))
+
+        lo_s, hi_s = min_scale, 1.0
+        if lo_s < hi_s:
+            for _ in range(24):
+                mid   = (lo_s + hi_s) / 2.0
+                trial = steps * mid
+                if _total_bits(coeffs_bands, trial) <= eff_budget:
+                    hi_s = mid
+                else:
+                    lo_s = mid
+            steps = steps * hi_s
 
     return steps
 

@@ -827,6 +827,23 @@ Recommended libraries:
 
 **Reasoning:** Gradient dots provide a continuous confidence value, not sub-integer coefficient precision. The coefficient values are still integers — what changes is how confidently they were read, which is captured by α[b]. Since α is a decode-time input from the visual decoder (not encoded in the audio bitstream), the audio codec requires no changes. Treating Mode 2 as a new audio codec version would require re-encoding all existing discs and breaking all existing decoders. Treating it as a visual decoder feature means a Mode 1 decoder can play a Mode 2 disc at reduced quality (it will read gradient dots as discrete colors, losing sub-dot precision but still producing audio).
 
+### 2026-04 — Bidirectional rate-distortion quantizer scaler
+
+**Decision:** Replace the one-directional step scaler (upward only) with a two-phase bidirectional scaler: Phase 1 scales steps upward when over budget (original behavior); Phase 2 scales steps downward uniformly when significant budget surplus exists.
+
+**Alternatives considered:** Adjusting ENTROPY_FACTOR per bitrate, replacing the estimator with actual Huffman cost measurement before encoding, leaving the plateau as a known limitation.
+
+**Reasoning:** The original scaler treated masking-threshold steps as a quality *ceiling* — it would degrade from them to fit a budget, but never improve beyond them even when budget was available. This produced the SNR plateau: at high bitrates, the masking-threshold steps fit the budget and the scaler did nothing. The fix treats masking-threshold steps as a quality *floor*: the minimum step size that keeps quantization noise inaudible. Surplus budget is used to go finer than that floor, producing near-lossless reconstruction at high bitrates.
+
+The saturation floor (peak_coeff / MAX_QUANT per band) prevents coefficient clipping when steps become very small. Without this floor, extremely fine steps cause all quantized values to saturate at ±2047, collapsing SNR to near 0 dB.
+
+**Measured impact:**
+- 3-tone at 96 kbps: +26.0 dB → +59.3 dB (+33.3 dB improvement, overtakes Opus by +16 dB)
+- 440 Hz at 96 kbps: +24.9 dB → +56.4 dB (+31.5 dB improvement, overtakes Opus by +13.3 dB)
+- 32 kbps tonal: +26 dB → +26–32 dB (moderate improvement; plateau remains at transition region)
+- 6–12 kbps: no change (budget was already binding; Phase 2 does not activate)
+- All existing tests: 74/74 pass
+
 ---
 
 ## 10. Open Problems and Future Work
@@ -900,16 +917,18 @@ Higher is better. Positive values mean the codec reconstructed more signal than 
 Signal                     6kbps          12kbps         32kbps         96kbps
                          DSA   Opus     DSA   Opus     DSA   Opus     DSA   Opus
 ──────────────────────────────────────────────────────────────────────────────────
-440 Hz tone            +24.9  +19.6   +24.9  +21.6   +24.9  +42.3   +24.9  +43.1
-1 kHz tone              +4.9  +12.8    +9.0  +20.2   +25.7  +43.8   +25.7  +44.3
-4 kHz tone              +9.9   +3.6   +23.2  +15.0   +28.2  +40.2   +28.2  +45.1
-3-tone (440+2k+9k)      +8.4   +5.3    +9.5   +7.2   +26.0  +38.3   +26.0  +43.3
-White noise             -0.2   -0.4    +1.1   -0.1    +3.5   -0.5    +6.9   +6.3
-Chirp (100→20kHz)       +1.7   -0.1    +4.1   +0.6   +11.1  +11.2   +11.1  +23.7
+440 Hz tone            +24.9  +19.6   +24.9  +21.6   +26.0  +42.3   +56.4  +43.1
+1 kHz tone              +4.9  +12.8    +9.0  +20.2   +26.3  +43.8   +56.0  +44.3
+4 kHz tone              +9.9   +3.6   +23.2  +15.0   +30.5  +40.2   +56.6  +45.1
+3-tone (440+2k+9k)      +8.4   +5.3    +9.5   +7.2   +32.7  +38.3   +59.3  +43.3
+White noise             -0.2   -0.4    +1.1   -0.1    +3.5   -0.5    +7.2   +6.3
+Chirp (100→20kHz)       +1.8   -0.1    +4.3   +0.6   +12.0  +11.2   +19.0  +23.7
 ──────────────────────────────────────────────────────────────────────────────────
 ```
 
-**Bold result:** DSA outperforms Opus at 6 and 12 kbps on tonal signals and wideband content.
+*(Updated April 2026 after bidirectional rate-distortion fix — see Section 7 design decisions log.)*
+
+**Result:** DSA leads Opus at 6–12 kbps and at 96 kbps on tonal signals. Opus leads at 32 kbps and on broadband signals above 32 kbps.
 
 ---
 
@@ -928,11 +947,14 @@ DSA maintains modest positive SNR (+1 to +7 dB) where Opus is near or below 0 dB
 
 **Opus advantages:**
 
-*32 kbps and above, tonal signals:*
-Opus dominates above 32 kbps, by 12–18 dB on tonal signals. The root cause is a known limitation in the DSA quantizer: `ENTROPY_FACTOR=2.0` (the assumed compression ratio per bit budget calculation) breaks down at high bitrates. The quantizer does not effectively use the extra bits; SNR plateaus at approximately 25–28 dB regardless of available bitrate. Opus continues to improve up to ~44 dB at 96 kbps.
+*32 kbps, tonal signals:*
+Opus leads at 32 kbps by 5–17 dB on tonal signals. This is the transition region where the bidirectional scaler improves quality but the masking-threshold steps and MAX_QUANT ceiling interact with the budget in a way that leaves some bits unused. At 96 kbps, DSA overtakes Opus because it uses fine-grained steps approaching near-lossless reconstruction on tonal content.
+
+*Chirp at 96 kbps (-4.7 dB):*
+Opus maintains an advantage on the frequency sweep at 96 kbps. The chirp exercises all 48 bands simultaneously with equal energy — the most challenging signal for DSA's layered budget allocation. DSA performs better at low bitrates on chirp (+1.9 dB at 6 kbps) but Opus's mature rate-distortion coding is more efficient on complex broadband signals at high bitrates.
 
 *1 kHz tone at 6–12 kbps:*
-Opus beats DSA by 8–11 dB at 1 kHz. This is the clearest case where Opus's mature psychoacoustic model outperforms DSA's simplified approach. 1 kHz sits at the boundary between L0 and L1 layers; the quantizer budget split between layers may introduce inefficiency that a single-pass Opus encoder avoids.
+Opus beats DSA by 8–11 dB at 1 kHz. 1 kHz sits at the L0/L1 layer boundary; the budget split may introduce inefficiency that a single-pass Opus encoder avoids. Remaining known limitation.
 
 ---
 
@@ -943,12 +965,12 @@ Measured at 12 kbps on a 5-second signal, all times in × real-time (higher = fa
 ```
 Signal                   DSA enc   DSA dec  Opus enc  Opus dec
 ────────────────────────────────────────────────────────────────
-440 Hz tone                 0.9×      9.3×    159.8×    202.6×
-1 kHz tone                  0.8×     12.6×    181.8×    221.9×
-4 kHz tone                  0.9×     12.2×    195.0×    216.9×
-3-tone (440+2k+9k)          0.9×     11.9×    160.0×    221.2×
-White noise                 0.8×      7.6×     72.3×    218.9×
-Chirp (100→20kHz)           1.3×     12.0×     80.5×    216.5×
+440 Hz tone                 0.8×     12.0×    193.0×    221.9×
+1 kHz tone                  0.8×     12.2×    186.7×    221.8×
+4 kHz tone                  0.9×     12.1×    196.2×    213.1×
+3-tone (440+2k+9k)          0.9×     12.5×    160.8×    225.5×
+White noise                 0.8×      9.1×     69.8×    199.9×
+Chirp (100→20kHz)           0.8×      4.8×     74.0×    183.8×
 ────────────────────────────────────────────────────────────────
 ```
 
@@ -1013,7 +1035,9 @@ The ramp signal (loud first half, silent second half) correctly flips temporal e
 
 ### 11.6 Known limitations and future work
 
-**SNR plateau at high bitrates.** DSA SNR saturates at approximately 25–28 dB above 32 kbps. The quantizer's `ENTROPY_FACTOR=2.0` estimate of Huffman compression ratio is correct at low bitrates but the encoder does not effectively exploit available bits at high bitrates. The fix requires a rate-distortion optimization loop in the quantizer: iterate step sizes until the actual encoded bit cost matches the budget, rather than estimating it. This would bring DSA into competitive range with Opus above 32 kbps.
+**SNR plateau fixed (April 2026).** The original quantizer only scaled steps upward (quality reduction). A bidirectional rate-distortion scaler was added: Phase 2 scales steps downward when surplus budget exists, using binary search with a MAX_QUANT saturation floor. Result: tonal signals at 96 kbps improved from ~26 dB to 56–59 dB, overtaking Opus. See design decisions log.
+
+**Remaining gap at 32 kbps.** DSA trails Opus by 5–17 dB at 32 kbps on tonal signals. The transition region where the bidirectional scaler improves quality but has not yet reached near-lossless reconstruction. Likely improvable with a tighter saturation floor calibration and per-layer scale-down priority.
 
 **1 kHz band boundary inefficiency.** The 8–11 dB SNR gap at 1 kHz (6–12 kbps) suggests the L0/L1 budget split is not optimal near the layer boundary. A signal at exactly 1 kHz sits between the layer budgets. A smoother budget allocation that does not hard-cut at the layer boundary would improve this.
 
