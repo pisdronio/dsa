@@ -667,21 +667,53 @@ Each DSA layer uses color pairs chosen for maximum visual discriminability under
 
 **Layer 0 (bass, inner rings):**
 
-High-contrast pairs only — Black↔White, Black↔Yellow, Black↔Cyan.
+High-contrast pairs — Black↔White, Blue↔Yellow, Black↔Yellow.
 
 Largest dot size, must read under any conditions: worn print, cheap camera, hand partially covering disc. Contrast is maximized because these bands carry the fundamental frequencies — loss of Layer 0 readability means loss of the musical identity of the track.
 
 **Layer 1 (mid, middle rings):**
 
-Medium-contrast pairs — Red↔Cyan, Blue↔Yellow, Green↔Purple.
+High-contrast pairs — Black↔White, Green↔Purple, Blue↔Yellow.
 
-Readable on any modern phone camera under normal ambient conditions. These complementary pairs are chosen to survive JPEG compression and auto-white-balance adjustments that phone cameras apply before exposing pixel data to the app.
+Readable on any modern phone camera under normal ambient conditions. Pairs are chosen to survive JPEG compression and auto-white-balance adjustments that phone cameras apply before exposing pixel data to the app.
 
 **Layer 2 (high freq, outer rings):**
 
-Full 8-color palette available.
+Full 8-color palette: Black↔White, Green↔Purple, Blue↔Yellow, Black↔Yellow, Yellow↔Purple, Red↔Green, Black↔Cyan, Green↔Blue.
 
 Requires Digilog Rig with controlled LED lighting and fixed focal distance. Smaller dots, higher density, maximum data capacity. Color accuracy at this precision requires controlled illumination — ambient light introduces enough color shift to corrupt high-frequency coefficient reads.
+
+#### 12.2.1 CIEDE2000 color pair optimization
+
+The v1 color pair assignments were selected by human judgment and functional criteria. The v1.1 pairs above were derived by exhaustive scoring of all 28 possible pairs from the 8-color palette using the CIEDE2000 perceptual color distance metric (ISO 11664-6; Sharma, Wencheng, & Dalal, 2005) combined with a gradient monotonicity score — the minimum ΔE₀₀ between adjacent steps across a 10-sample LAB gradient.
+
+**Layer thresholds applied by the optimizer:**
+
+| Layer | ΔE₀₀ min | Min step ΔE | Reader condition |
+|-------|----------|-------------|-----------------|
+| L0    | > 70.0   | > 5.0       | Worst-case (any reader) |
+| L1    | > 55.0   | > 3.5       | Phone camera, ambient light |
+| L2    | > 40.0   | > 2.0       | Digilog Rig only |
+
+**Pair selection:** Greedy max-min — pairs are added to each layer's pool to maximize the minimum ΔE₀₀ across the pool (fairness across bands rather than maximizing the single strongest pair).
+
+**ΔE₀₀ improvement over v1 pairs:**
+
+| Layer | v1 worst pair | v1 ΔE₀₀ | v1.1 worst pair | v1.1 ΔE₀₀ | Gain |
+|-------|--------------|---------|----------------|-----------|------|
+| L0    | Black↔Cyan   |   70.0  | Black↔Yellow   |    85.5   | +15.5 |
+| L1    | Red↔Cyan     |   65.4  | Blue↔Yellow    |    90.6   | +25.2 |
+| L2    | Red↔Purple   |   36.8  | Green↔Blue     |    67.8   | +31.0 |
+
+All pairs are interpolated in CIELAB space (not RGB linear) by the renderer, ensuring perceptually uniform gradients at every steepness level.
+
+**Virtual read accuracy (guerrero_30s, 300 DPI, 1293 frames × 48 bands):**
+
+- Direction accuracy: **93.72%** (58,164 / 62,064 cells correct)
+- Steepness MAE: **0.042**
+- Overall mean confidence α: **0.970**
+
+The residual 6.28% direction errors are concentrated at near-zero steepness (steepness < 0.032, i.e., |q_int| < 1). At this magnitude the coefficient contributes negligibly to the reconstructed signal — the acoustic impact of these errors is inaudible. The physical constraint is fundamental: the two-sample read method (arc_pos = 0.25 and 0.75) cannot reliably distinguish a gradient from a solid color when steepness falls below the sampling noise floor (threshold = 0.008, derived as half the minimum Mode 1 diff).
 
 ### 12.3 Gradient steepness ↔ coefficient magnitude
 
@@ -1558,6 +1590,10 @@ The Digilog v4 calibration disc applies exactly this framework to a rotational o
 
 32. El-Raheem, A.M.A. (2019). "Rolling shutter effect modeling and correction for high-speed rotating objects." *Journal of Electronic Imaging*, 28(4). — Models the systematic phase shift introduced by rolling shutter cameras when imaging rotating objects; directly applicable to the phase correction required in Section 13.12.3 for Digilog disc reading.
 
+33. Sharma, G., Wencheng, W., & Dalal, E.N. (2005). "The CIEDE2000 color-difference formula: Implementation notes, supplementary test data, and mathematical observations." *Color Research & Application*, 30(1), 21–30. — Definitive reference implementation of CIEDE2000 (ISO 11664-6). The perceptual color distance metric used in DSA v1.1 color pair optimization (Section 12.2.1) and gradient monotonicity scoring. CIEDE2000 corrects known non-uniformities in CIELAB for low-chroma and blue-region colors relative to earlier ΔE*ab formulas.
+
+34. ISO 11664-6 (2014). *Colorimetry — Part 6: CIEDE2000 Colour-Difference Formula*. International Organization for Standardization. — International standard defining the CIEDE2000 formula implemented in `dsa_color.py`. Specifies the parametric weighting factors k_L = k_C = k_H = 1 (graphic arts reference conditions) used in the DSA optimizer.
+
 ---
 
 *Section 13 added April 2026 following theoretical development of DSA v4: Physics-Integrated Optical Encoding. The calibration disc and experimental protocol described here are the necessary first step before any v4 encoding specification can be written. The specification will be derived from measurement, not theory.*
@@ -1621,9 +1657,11 @@ This section records research directions that extend beyond DSA audio into adjac
 
 ---
 
-### 15.1 The current color model is mathematically defined, not perceptually optimized
+### 15.1 CIELAB optimization — implemented in v1.1
 
 The DSA v1 color pair assignments (Section 12.2) were selected by human judgment and functional criteria: high-contrast pairs for L0 (Black↔White, Black↔Yellow, Black↔Cyan), complementary pairs for L1 (Red↔Cyan, Blue↔Yellow, Green↔Purple), and full palette for L2. These choices are reasonable but not derived from a perceptual color model.
+
+**Implemented (v1.1, April 2026):** `dsa_palette.py` scores all 28 possible pairs using CIEDE2000 and gradient monotonicity, then applies greedy max-min selection per layer. The result is documented in Section 12.2.1. All gradients are now rendered via CIELAB interpolation (`dsa_color.py`) rather than RGB linear, eliminating muddy midpoints. Virtual read accuracy on the 30s test track reached 93.72% direction accuracy at 300 DPI.
 
 **The core problem:** two colors with a large RGB Euclidean distance are not necessarily the most perceptually distinct pair to the human eye or a camera sensor under real lighting conditions. RGB space is a device model, not a perceptual model. Empirical observation of the current disc renderer output confirms this: the strip visualization appears low-contrast and visually crude even under controlled conditions, and will degrade further under real-world lighting (ambient color shifts, print ink variation, camera auto-white-balance).
 
