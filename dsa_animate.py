@@ -1,20 +1,39 @@
 #!/usr/bin/env python3
 """
 DSA — Digilog Scalable Audio
-dsa_animate.py — Spinning Disc Animation
+dsa_animate.py — Strip Tape Animator
 
-Renders a disc.json as a rotating disc video (MP4 or GIF).
-A fixed red scan line represents the camera read position.
-As the disc rotates, different frame arcs pass under the scan line —
-visually showing how audio data is read from the physical medium.
+Renders the DSA disc as what the camera actually sees: a strip of color bands
+scrolling past a fixed read window — the tape-head model (Section 12.8).
+
+The disc is a storage medium. The strip is the instrument.
+
+The camera sees a narrow fixed horizontal window. The disc rotates, advancing
+the spiral groove through the window one frame at a time. The output is a
+vertical waterfall of color bands: left = L0 (bass), right = L2 (high),
+time scrolling upward as the disc rotates forward.
+
+Display layout:
+    ┌─────────────────────────────────────────────────┐
+    │  L0 (bass)  ──────────────────  L2 (high)      │
+    │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │  past frames
+    ├──────────────────────────────────────────────── ┤  camera window (NOW)
+    │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │  future frames
+    └─────────────────────────────────────────────────┘
+
+    Forward playback:  strip scrolls upward  (past rises, future arrives from below)
+    Reverse playback:  strip scrolls downward
+    Speed change:      scroll rate changes   (pitch and tempo shift together)
+
+Also available: --mode disc — original spinning disc visualization with scan line.
+This is the "storage medium" view, not the "instrument" view.
 
 Usage:
-    python3 dsa_animate.py song.disc.json
-    python3 dsa_animate.py song.disc.json --rpm 33 --fps 30 --duration 5
-    python3 dsa_animate.py song.disc.json --gif --duration 3
-    python3 dsa_animate.py song.disc.json --size 600 --out disc.mp4
-
-Requires: Pillow, ffmpeg (for MP4), numpy
+    python3 dsa_animate.py song.disc.json                        # tape strip (default)
+    python3 dsa_animate.py song.disc.json --out strip.mp4
+    python3 dsa_animate.py song.disc.json --mode disc            # spinning disc
+    python3 dsa_animate.py song.disc.json --mode disc --out disc.mp4
+    python3 dsa_animate.py song.disc.json --gif                  # GIF output
 
 License: GPL v3 — github.com/pisdronio/dsa
 """
@@ -22,7 +41,6 @@ License: GPL v3 — github.com/pisdronio/dsa
 import argparse
 import json
 import math
-import os
 import subprocess
 import sys
 import tempfile
@@ -35,17 +53,9 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
-# ─── Disc geometry (mm) ───────────────────────────────────────────────────────
+from dsa_color import rgb_to_lab, lab_to_rgb
 
-DISC_DIAMETER_MM   = 290.0
-OUTER_AUDIO_MM     = 141.0
-INNER_AUDIO_MM     = 62.0
-CLOCK_WIDTH_MM     = 2.5
-CLOCK_SEGMENTS     = 300
-REF_MARKERS        = 8
-LABEL_RADIUS_MM    = 55.0
-SPINDLE_RADIUS_MM  = 7.0
-NUM_BANDS          = 48
+# ─── Palette ──────────────────────────────────────────────────────────────────
 
 PALETTE = {
     'black':  np.array([0,   0,   0],   dtype=np.float32),
@@ -59,282 +69,349 @@ PALETTE = {
 }
 
 
-def _build_disc_image(layout: dict, size_px: int) -> Image.Image:
-    """
-    Render the full disc as a PIL Image at size_px × size_px.
-    This is done once; frames are created by rotating this image.
-    """
-    n_frames  = layout['n_frames']
-    n_bands   = layout['n_bands']
-    frames    = layout['frames']
-    bp_map    = {b['band']: (b['color_a'], b['color_b']) for b in layout['band_pairs']}
+# ─── Color table builder ──────────────────────────────────────────────────────
 
-    mm_to_px       = size_px / DISC_DIAMETER_MM
-    ctr            = size_px // 2
-    outer_audio_px = OUTER_AUDIO_MM  * mm_to_px
-    inner_audio_px = INNER_AUDIO_MM  * mm_to_px
-    ring_width_px  = (outer_audio_px - inner_audio_px) / n_bands
-    clock_inner_px = outer_audio_px
-    clock_outer_px = (OUTER_AUDIO_MM + CLOCK_WIDTH_MM) * mm_to_px
-    label_px       = LABEL_RADIUS_MM * mm_to_px
-    spindle_px     = SPINDLE_RADIUS_MM * mm_to_px
-    disc_r_px      = (DISC_DIAMETER_MM / 2) * mm_to_px
+def _build_color_table(layout: dict) -> np.ndarray:
+    """
+    Build a (n_frames, n_bands, 3) uint8 color table.
+    Each cell gets the representative gradient midpoint color (t=0.5 × steepness).
+    """
+    n_frames = layout['n_frames']
+    n_bands  = layout['n_bands']
+    bp_map   = {b['band']: (b['color_a'], b['color_b']) for b in layout['band_pairs']}
 
-    # Build steepness / direction tables
-    steep = np.zeros((n_frames, n_bands), dtype=np.float32)
-    dir_  = np.zeros((n_frames, n_bands), dtype=np.int8)
-    for fd in frames:
+    ca_rgb = np.array([PALETTE[bp_map[b][0]] for b in range(n_bands)], dtype=np.float64)
+    cb_rgb = np.array([PALETTE[bp_map[b][1]] for b in range(n_bands)], dtype=np.float64)
+    ca_lab = rgb_to_lab(ca_rgb)
+    cb_lab = rgb_to_lab(cb_rgb)
+
+    # Default: solid color_a
+    table = np.zeros((n_frames, n_bands, 3), dtype=np.uint8)
+    for b in range(n_bands):
+        table[:, b] = PALETTE[bp_map[b][0]].astype(np.uint8)
+
+    for fd in layout['frames']:
         fi = fd['frame_idx']
         if fd['silence']:
             continue
         for bd in fd['bands']:
-            b            = bd['band']
-            steep[fi, b] = bd['steepness']
-            dir_[fi, b]  = bd['direction']
+            b = bd['band']
+            s = bd['steepness']
+            d = bd['direction']
+            if d == 0 or s < 0.001:
+                continue
+            t     = float(np.clip(0.5 * s if d > 0 else s - 0.5 * s, 0.0, 1.0))
+            mixed = ca_lab[b] + (cb_lab[b] - ca_lab[b]) * t
+            table[fi, b] = lab_to_rgb(mixed[np.newaxis])[0]
 
-    ca = np.zeros((n_bands, 3), dtype=np.float32)
-    cb = np.zeros((n_bands, 3), dtype=np.float32)
-    for b in range(n_bands):
-        ca[b] = PALETTE[bp_map[b][0]]
-        cb[b] = PALETTE[bp_map[b][1]]
-
-    # Pixel coordinate arrays
-    yy, xx = np.mgrid[0:size_px, 0:size_px].astype(np.float32)
-    ddx    = xx - ctr
-    ddy    = yy - ctr
-    r      = np.sqrt(ddx * ddx + ddy * ddy)
-    theta  = np.arctan2(ddx, -ddy) % (2.0 * math.pi)
-
-    img = np.full((size_px, size_px, 3), 255, dtype=np.uint8)
-
-    # Audio bands
-    in_audio    = (r >= inner_audio_px) & (r < outer_audio_px)
-    b_idx       = ((r - inner_audio_px) / ring_width_px).astype(np.int32)
-    np.clip(b_idx, 0, n_bands - 1, out=b_idx)
-    frame_angle = 2.0 * math.pi / n_frames
-    f_idx       = (theta / frame_angle).astype(np.int32)
-    np.clip(f_idx, 0, n_frames - 1, out=f_idx)
-    arc_pos     = (theta % frame_angle) / frame_angle
-
-    ay, ax = np.where(in_audio)
-    fi     = f_idx[ay, ax]
-    bi     = b_idx[ay, ax]
-    pos    = arc_pos[ay, ax]
-    s      = steep[fi, bi]
-    d      = dir_[fi, bi].astype(np.float32)
-    t      = np.where(d == 0, 0.0,
-             np.where(d > 0,  pos * s,
-                               s * (1.0 - pos))).astype(np.float32)
-    np.clip(t, 0.0, 1.0, out=t)
-    t3     = t[:, np.newaxis]
-    colors = (ca[bi] + (cb[bi] - ca[bi]) * t3).astype(np.uint8)
-    img[ay, ax] = colors
-
-    # Clock track
-    clock_y, clock_x = np.where((r >= clock_inner_px) & (r < clock_outer_px))
-    if len(clock_y):
-        segs = (theta[clock_y, clock_x] / (2.0 * math.pi) * CLOCK_SEGMENTS
-                ).astype(np.int32) % CLOCK_SEGMENTS
-        even = segs % 2 == 0
-        img[clock_y[even],  clock_x[even]]  = (0,   0,   0)
-        img[clock_y[~even], clock_x[~even]] = (255, 255, 255)
-
-    img[r < label_px]   = (210, 210, 210)
-    img[r < spindle_px] = (255, 255, 255)
-    img[r >= disc_r_px] = (255, 255, 255)
-
-    pil = Image.fromarray(img)
-    draw = ImageDraw.Draw(pil)
-
-    # Reference markers
-    ref_r  = (clock_inner_px + clock_outer_px) / 2.0
-    dot_r  = max(3, int(mm_to_px * 1.8))
-    for i in range(REF_MARKERS):
-        angle = i * 2.0 * math.pi / REF_MARKERS
-        px_x  = ctr + ref_r * math.sin(angle)
-        px_y  = ctr - ref_r * math.cos(angle)
-        draw.ellipse([px_x - dot_r, px_y - dot_r, px_x + dot_r, px_y + dot_r],
-                     fill=(230, 40, 40))
-
-    return pil
+    return table
 
 
-def _make_frame(disc_img: Image.Image, angle_deg: float,
-                size_px: int, scan_angle_deg: float = 90.0) -> Image.Image:
+# ─── Tape strip animation ─────────────────────────────────────────────────────
+
+def render_tape(layout_path: str,
+                out_path: str      = None,
+                video_fps: int     = 30,
+                rpm: float         = 33.0,
+                cell_w: int        = 12,
+                cell_h: int        = 3,
+                window_frames: int = 160,
+                gif: bool          = False) -> str:
     """
-    Rotate the disc by angle_deg and draw the scan line at scan_angle_deg.
-    scan_angle_deg: 0=top, 90=right, 180=bottom (clockwise from 12 o'clock).
+    Render the tape-head strip animation.
+
+    The strip scrolls vertically. Left = L0 bass, right = L2 high.
+    The fixed yellow line is the camera window (current audio frame).
+    Past frames are above, slightly dimmed. Future frames below, full brightness.
     """
-    # Rotate disc (expand=False keeps the canvas size)
-    rotated = disc_img.rotate(-angle_deg, resample=Image.BILINEAR, expand=False)
-
-    draw = ImageDraw.Draw(rotated)
-    ctr  = size_px // 2
-    mm_to_px = size_px / DISC_DIAMETER_MM
-
-    # Draw scan line: radial from inner audio edge to outer clock edge
-    inner_r = INNER_AUDIO_MM  * mm_to_px
-    outer_r = (OUTER_AUDIO_MM + CLOCK_WIDTH_MM) * mm_to_px
-    rad     = math.radians(scan_angle_deg - 90)   # convert to math angle (0=right)
-    x0 = ctr + inner_r * math.cos(rad)
-    y0 = ctr + inner_r * math.sin(rad)
-    x1 = ctr + outer_r * math.cos(rad)
-    y1 = ctr + outer_r * math.sin(rad)
-
-    # Glowing scan line: wide white + narrow bright red
-    lw = max(2, int(mm_to_px * 0.6))
-    draw.line([(x0, y0), (x1, y1)], fill=(255, 255, 255), width=lw + 2)
-    draw.line([(x0, y0), (x1, y1)], fill=(255, 30,  30),  width=lw)
-
-    return rotated
-
-
-def animate(layout_path: str,
-            rpm: float     = 33.0,
-            fps: int       = 30,
-            duration_s: float = 4.0,
-            size_px: int   = 700,
-            out_path: str  = None,
-            make_gif: bool = False) -> str:
-    """
-    Render a spinning disc animation.
-
-    Parameters
-    ----------
-    layout_path : .disc.json file
-    rpm         : rotation speed (default 33 rpm)
-    fps         : animation frame rate (default 30)
-    duration_s  : animation duration in seconds (default 4)
-    size_px     : disc image size in pixels (default 700)
-    out_path    : output path (.mp4 or .gif)
-    make_gif    : force GIF output even if ffmpeg available
-    """
-
     print(f"  Loading {Path(layout_path).name} ...", end=' ', flush=True)
     with open(layout_path) as f:
         layout = json.load(f)
-    n_frames = layout['n_frames']
-    print(f"done  ({n_frames} frames, {layout['duration_s']:.1f}s encoded)")
+    n_frames   = layout['n_frames']
+    n_bands    = layout['n_bands']
+    duration_s = layout['duration_s']
+    print(f"done  ({n_frames} frames, {duration_s:.1f}s)")
 
-    # ── Build base disc image ─────────────────────────────────────────────────
-    print(f"  Rendering disc at {size_px}px ...", end=' ', flush=True)
-    disc_img = _build_disc_image(layout, size_px)
+    print("  Building color table...", end=' ', flush=True)
+    color_table = _build_color_table(layout)
     print("done")
 
-    # ── Generate animation frames ─────────────────────────────────────────────
-    deg_per_anim_frame = 360.0 * (rpm / 60.0) / fps
-    n_anim_frames      = int(duration_s * fps)
+    audio_fps       = n_frames / duration_s
+    audio_per_video = audio_fps / video_fps
+    n_video_frames  = int(n_frames / audio_per_video)
 
-    print(f"  Generating {n_anim_frames} frames "
-          f"({rpm}rpm, {fps}fps, {duration_s:.1f}s, {deg_per_anim_frame:.2f}°/frame) ...")
+    img_w   = n_bands * cell_w
+    img_h   = window_frames * cell_h
+    now_row = img_h // 3       # camera window at 1/3 from top
 
-    frames_pil = []
-    for i in range(n_anim_frames):
-        angle = i * deg_per_anim_frame
-        frame = _make_frame(disc_img, angle, size_px)
-        frames_pil.append(frame)
-        if (i + 1) % fps == 0:
-            print(f"    {i+1}/{n_anim_frames}", end='\r', flush=True)
+    WIN_LINE  = (255, 255, 80)
+    SEP_COLOR = (60,  60,  60)
 
-    print(f"    {n_anim_frames}/{n_anim_frames}  done          ")
+    print(f"  Window: {img_w}×{img_h}px  "
+          f"({n_bands} bands × {cell_w}px, {window_frames} rows × {cell_h}px)")
+    print(f"  {n_video_frames} video frames  ({n_video_frames/video_fps:.1f}s at {video_fps} fps)")
 
-    # ── Output ────────────────────────────────────────────────────────────────
     if out_path is None:
-        ext      = '.gif' if make_gif else '.mp4'
-        out_path = str(Path(layout_path).with_suffix(ext))
+        ext      = '.gif' if gif else '.mp4'
+        base     = str(Path(layout_path).with_suffix('').with_suffix(''))
+        out_path = base + '.tape' + ext
 
-    if make_gif or out_path.endswith('.gif'):
-        print(f"  Saving GIF → {out_path} ...", end=' ', flush=True)
-        frames_pil[0].save(
-            out_path,
-            save_all=True,
-            append_images=frames_pil[1:],
-            loop=0,
-            duration=int(1000 / fps),
-            optimize=False,
-        )
-        size_mb = Path(out_path).stat().st_size / 1024 / 1024
-        print(f"done  ({size_mb:.1f} MB)")
-
+    if gif:
+        _tape_gif(color_table, n_frames, n_bands, n_video_frames, audio_per_video,
+                  img_w, img_h, now_row, cell_w, cell_h, WIN_LINE, SEP_COLOR,
+                  out_path, video_fps)
     else:
-        # MP4 via ffmpeg (much smaller, better quality)
-        _check_ffmpeg()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            print(f"  Writing frame PNGs ...", end=' ', flush=True)
-            for i, f in enumerate(frames_pil):
-                f.save(os.path.join(tmpdir, f"frame_{i:05d}.png"))
-            print("done")
-
-            print(f"  Encoding MP4 → {out_path} ...", end=' ', flush=True)
-            cmd = [
-                'ffmpeg', '-y',
-                '-framerate', str(fps),
-                '-i', os.path.join(tmpdir, 'frame_%05d.png'),
-                '-c:v', 'libx264',
-                '-crf', '18',
-                '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart',
-                out_path,
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"\n  ffmpeg error:\n{result.stderr}")
-                sys.exit(1)
-            size_mb = Path(out_path).stat().st_size / 1024 / 1024
-            print(f"done  ({size_mb:.1f} MB)")
+        _tape_mp4(color_table, n_frames, n_bands, n_video_frames, audio_per_video,
+                  img_w, img_h, now_row, cell_w, cell_h, WIN_LINE, SEP_COLOR,
+                  out_path, video_fps)
 
     return out_path
 
 
-def _check_ffmpeg():
-    result = subprocess.run(['ffmpeg', '-version'], capture_output=True)
-    if result.returncode != 0:
-        sys.exit("ffmpeg not found — install with: brew install ffmpeg\n"
-                 "Or use --gif for GIF output (no ffmpeg required)")
+def _tape_frame(color_table, n_frames, n_bands,
+                current_audio, img_w, img_h, now_row,
+                cell_w, cell_h, win_line, sep_color):
+    """Render one video frame of the tape animation."""
+    img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
 
+    # Precompute audio frame indices for all display rows (vectorized)
+    dy_arr     = np.arange(img_h)
+    row_offset = (dy_arr - now_row) / cell_h           # neg = past, pos = future
+    fi_arr     = (current_audio + row_offset).astype(np.int32)
+    valid      = (fi_arr >= 0) & (fi_arr < n_frames)
+
+    for dy in range(img_h):
+        if not valid[dy]:
+            continue
+        fi = fi_arr[dy]
+        # Draw all 48 bands for this row
+        row_colors = color_table[fi]   # (n_bands, 3)
+        for b in range(n_bands):
+            img[dy, b * cell_w : (b + 1) * cell_w] = row_colors[b]
+        # Dim past frames slightly
+        if dy < now_row:
+            img[dy] = np.clip(img[dy].astype(np.int32) - 30, 0, 255).astype(np.uint8)
+
+    # Camera window highlight
+    win_h = max(2, cell_h // 2)
+    img[now_row : now_row + win_h] = win_line
+
+    # Layer separators (vertical lines between L0/L1 and L1/L2)
+    for sep_b in (8, 24):
+        x = sep_b * cell_w
+        img[:, x - 1 : x + 1] = sep_color
+
+    return img
+
+
+def _tape_mp4(color_table, n_frames, n_bands, n_video_frames, audio_per_video,
+              img_w, img_h, now_row, cell_w, cell_h, win_line, sep_color,
+              out_path, video_fps):
+    if not _has_ffmpeg():
+        print("  ffmpeg not found — use --gif")
+        return
+    print(f"  Encoding MP4 → {out_path} ...", flush=True)
+    cmd = ['ffmpeg', '-y',
+           '-f', 'rawvideo', '-vcodec', 'rawvideo',
+           '-s', f'{img_w}x{img_h}', '-pix_fmt', 'rgb24',
+           '-r', str(video_fps), '-i', 'pipe:0',
+           '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', out_path]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        for vf in range(n_video_frames):
+            f = _tape_frame(color_table, n_frames, n_bands,
+                            vf * audio_per_video,
+                            img_w, img_h, now_row, cell_w, cell_h,
+                            win_line, sep_color)
+            proc.stdin.write(f.tobytes())
+            if vf % 150 == 0:
+                pct = 100 * vf / n_video_frames
+                print(f"    {vf}/{n_video_frames} ({pct:.0f}%)", end='\r', flush=True)
+    finally:
+        proc.stdin.close()
+        proc.wait()
+    size_mb = Path(out_path).stat().st_size / 1024 / 1024
+    print(f"  Done → {out_path}  ({size_mb:.1f} MB)              ")
+
+
+def _tape_gif(color_table, n_frames, n_bands, n_video_frames, audio_per_video,
+              img_w, img_h, now_row, cell_w, cell_h, win_line, sep_color,
+              out_path, video_fps, max_frames=120):
+    step = max(1, n_video_frames // max_frames)
+    print(f"  Building GIF ({min(max_frames, n_video_frames)} frames) ...",
+          end=' ', flush=True)
+    frames = []
+    for vf in range(0, n_video_frames, step):
+        f = _tape_frame(color_table, n_frames, n_bands,
+                        vf * audio_per_video,
+                        img_w, img_h, now_row, cell_w, cell_h,
+                        win_line, sep_color)
+        frames.append(Image.fromarray(f))
+        if len(frames) >= max_frames:
+            break
+    frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                   loop=0, duration=int(1000 / video_fps * step))
+    size_kb = Path(out_path).stat().st_size / 1024
+    print(f"done  ({len(frames)} frames, {size_kb:.0f} KB) → {out_path}")
+
+
+# ─── Disc spinning animation ──────────────────────────────────────────────────
+
+def render_disc_anim(layout_path: str,
+                     out_path: str  = None,
+                     video_fps: int = 30,
+                     rpm: float     = 33.0,
+                     dpi_sim: int   = 150,
+                     gif: bool      = False) -> str:
+    """
+    Spinning disc animation — the storage medium view.
+
+    Shows the disc rotating with a fixed red scan line. This visualizes the
+    disc as an object, not as the signal the camera reads. Use --mode tape
+    for the instrument/signal view.
+    """
+    from dsa_render import render_disc
+
+    print(f"  Loading {Path(layout_path).name} ...", end=' ', flush=True)
+    with open(layout_path) as f:
+        layout = json.load(f)
+    n_frames   = layout['n_frames']
+    duration_s = layout['duration_s']
+    print(f"done  ({n_frames} frames, {duration_s:.1f}s)")
+
+    print("  Rendering base disc ...", flush=True)
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+        tmp_path = tmp.name
+    render_disc(layout_path, dpi=dpi_sim, out_path=tmp_path)
+
+    base_img = np.array(Image.open(tmp_path).convert('RGB'), dtype=np.uint8)
+    disc_px  = base_img.shape[0]
+    ctr      = disc_px // 2
+
+    audio_fps          = n_frames / duration_s
+    audio_per_video    = audio_fps / video_fps
+    n_video_frames     = int(n_frames / audio_per_video)
+    degrees_per_vframe = (rpm / 60.0) * 360.0 / video_fps
+
+    if out_path is None:
+        ext      = '.gif' if gif else '.mp4'
+        base     = str(Path(layout_path).with_suffix('').with_suffix(''))
+        out_path = base + '.disc' + ext
+
+    def _disc_frame(angle_deg):
+        pil  = Image.fromarray(base_img).rotate(angle_deg, resample=Image.BILINEAR)
+        draw = ImageDraw.Draw(pil)
+        draw.line([(ctr, ctr), (disc_px - 1, ctr)], fill=(220, 40, 40), width=3)
+        return np.array(pil, dtype=np.uint8)
+
+    if gif:
+        step   = max(1, n_video_frames // 60)
+        frames = []
+        for vf in range(0, n_video_frames, step):
+            frames.append(Image.fromarray(_disc_frame(vf * degrees_per_vframe)))
+            if len(frames) >= 60:
+                break
+        frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                       loop=0, duration=int(1000 / video_fps * step))
+        size_kb = Path(out_path).stat().st_size / 1024
+        print(f"  Done → {out_path}  ({size_kb:.0f} KB)")
+    else:
+        if not _has_ffmpeg():
+            print("  ffmpeg not found — use --gif")
+            return out_path
+        cmd = ['ffmpeg', '-y',
+               '-f', 'rawvideo', '-vcodec', 'rawvideo',
+               '-s', f'{disc_px}x{disc_px}', '-pix_fmt', 'rgb24',
+               '-r', str(video_fps), '-i', 'pipe:0',
+               '-vcodec', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', out_path]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            for vf in range(n_video_frames):
+                proc.stdin.write(_disc_frame(vf * degrees_per_vframe).tobytes())
+        finally:
+            proc.stdin.close()
+            proc.wait()
+        size_mb = Path(out_path).stat().st_size / 1024 / 1024
+        print(f"  Done → {out_path}  ({size_mb:.1f} MB)")
+
+    Path(tmp_path).unlink(missing_ok=True)
+    return out_path
+
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+
+def _has_ffmpeg() -> bool:
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser(
-        description='Render a spinning DSA disc animation (MP4 or GIF)')
+        description='DSA tape-head strip animator (default) or spinning disc animator')
     p.add_argument('layout',
                    help='Path to .disc.json')
-    p.add_argument('--rpm',      type=float, default=33.0,
-                   help='Rotation speed in RPM (default: 33)')
-    p.add_argument('--fps',      type=int,   default=30,
-                   help='Animation frame rate (default: 30)')
-    p.add_argument('--duration', type=float, default=4.0,
-                   help='Animation duration in seconds (default: 4)')
-    p.add_argument('--size',     type=int,   default=700,
-                   help='Disc size in pixels (default: 700)')
-    p.add_argument('--gif',      action='store_true',
-                   help='Output GIF instead of MP4 (no ffmpeg required)')
-    p.add_argument('--out',      type=str,   default=None,
-                   help='Output file path (.mp4 or .gif)')
+    p.add_argument('--mode',    choices=['tape', 'disc'], default='tape',
+                   help='tape = scrolling strip / instrument view (default); '
+                        'disc = spinning disc / storage view')
+    p.add_argument('--out',     type=str,   default=None,
+                   help='Output path (.mp4 default, or .gif with --gif)')
+    p.add_argument('--fps',     type=int,   default=30,
+                   help='Video frame rate (default: 30)')
+    p.add_argument('--rpm',     type=float, default=33.0,
+                   help='Disc rotation speed in RPM (default: 33)')
+    p.add_argument('--gif',     action='store_true',
+                   help='Write GIF instead of MP4')
+    p.add_argument('--cell-w',  type=int,   default=12,
+                   help='[tape] Pixels per frequency band column (default: 12)')
+    p.add_argument('--cell-h',  type=int,   default=3,
+                   help='[tape] Pixels per audio frame row (default: 3)')
+    p.add_argument('--window',  type=int,   default=160,
+                   help='[tape] Audio frames visible in window (default: 160)')
+    p.add_argument('--dpi',     type=int,   default=150,
+                   help='[disc] Render DPI for base disc image (default: 150)')
     args = p.parse_args()
 
     print()
     print("  DSA — Digilog Scalable Audio")
-    print("  Spinning Disc Animator")
+    if args.mode == 'tape':
+        print("  Tape-Head Strip Animator  (instrument view)")
+    else:
+        print("  Spinning Disc Animator  (storage medium view)")
     print("  ─────────────────────────────────────────────────")
-    print(f"  Layout:   {args.layout}")
-    print(f"  Speed:    {args.rpm} RPM")
-    print(f"  Duration: {args.duration}s  at {args.fps}fps")
-    print(f"  Size:     {args.size}px")
+    print(f"  Layout:  {args.layout}")
+    print(f"  Mode:    {args.mode}  |  {args.rpm} RPM  |  {args.fps} fps")
     print()
 
-    out = animate(
-        args.layout,
-        rpm=args.rpm,
-        fps=args.fps,
-        duration_s=args.duration,
-        size_px=args.size,
-        out_path=args.out,
-        make_gif=args.gif,
-    )
-
-    print()
-    print(f"  Output: {out}")
-    print("  Scan the groove.")
+    if args.mode == 'tape':
+        out = render_tape(args.layout,
+                          out_path=args.out,
+                          video_fps=args.fps,
+                          rpm=args.rpm,
+                          cell_w=args.cell_w,
+                          cell_h=args.cell_h,
+                          window_frames=args.window,
+                          gif=args.gif)
+        print()
+        print("  Yellow line = camera window (current frame = NOW)")
+        print("  Strip scrolls up = forward playback")
+        print("  Left = L0 bass  |  Right = L2 high")
+        print("  Gray lines = layer boundaries (L0/L1, L1/L2)")
+    else:
+        out = render_disc_anim(args.layout,
+                               out_path=args.out,
+                               video_fps=args.fps,
+                               rpm=args.rpm,
+                               dpi_sim=args.dpi,
+                               gif=args.gif)
+        print()
+        print("  Red line = camera window position (fixed)")
+        print("  Disc rotates = tape advancing through read head")
+        print("  Use --mode tape for the instrument/signal view")
     print()
 
 

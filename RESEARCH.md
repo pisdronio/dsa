@@ -880,7 +880,63 @@ At the current single-revolution geometry (0.30mm inner arcs), the gradients are
 
 Under the spiral design at 33 RPM, individual arcs (5mm inner, 11mm outer) are clearly visible to the naked eye. The gradient direction and steepness become visually apparent. This is a qualitative change in the disc as a visual artifact — it becomes a human-legible score as well as a machine-readable medium.
 
-### 12.8 Variable rate playback — real-time pitch control
+### 12.8 The tape-head model — disc as storage medium, strip as instrument
+
+**The disc is a tape reel. The camera is a tape head. The strip is the signal.**
+
+The camera never sees the whole disc. It sees a narrow fixed window — a horizontal slice cutting across all 48 bands simultaneously as the groove passes beneath it. That slice is one audio frame. The next frame is the next slice, delivered by the disc rotating and advancing the groove through the window.
+
+```
+         [camera window — narrow horizontal strip, fixed in space]
+                  ↕ reads this band simultaneously
+    ══════════════════════════════════════  ← groove segment (one frame)
+    ══════════════════════════════════════
+    ══════════════════════════════════════
+              disc rotating beneath
+```
+
+At any moment the camera outputs one column of the strip image: all 48 frequency bands sampled simultaneously, each as a gradient blend value. That column is the current audio frame. Time is disc rotation. The decoder never needs the full disc — only the current strip slice arriving at the window.
+
+This makes the physical behavior obvious:
+
+```
+Forward rotation  → frames arrive in sequence    → forward audio
+Reverse rotation  → frames arrive in reverse     → true reverse audio (not pitch-shifted)
+Speed up          → frames arrive faster         → pitch and tempo rise together
+Slow down         → frames arrive slower         → pitch and tempo fall together
+Stop              → same frame repeats           → sustained last sound, decays to silence
+Scratch           → arbitrary frame sequence     → arbitrary audio manipulation
+```
+
+The spiral groove IS the strip wound up. The disc form factor is compact storage for a very long tape. The physical object is a reel; the instrument is the ribbon.
+
+**Implications for the reader architecture:**
+The reader does not need to see the whole disc image. It needs to know the current angle θ (from the clock track or direct angle measurement) and sample the 48-band slice at that angle. The full disc image is useful for offline analysis and simulation; real-time reading is a single-column sampler, not an image processor.
+
+**Implications for the player UI:**
+The correct display is the scrolling strip — not a spinning disc animation. The screen shows the strip passing through the camera window in real time. What you see is exactly what the camera is reading:
+
+```
+  ┌─────────────────────────────────────────────────┐
+  │  L0 (bass) ──────────────────── L2 (high)      │
+  │  ████████████████████████████████████████████   │  ← past frame
+  │  ████████████████████████████████████████████   │  ← past frame
+  ├──────────────────────────────────────────────── ┤  ← camera window (NOW)
+  │  ████████████████████████████████████████████   │  ← future frame
+  │  ████████████████████████████████████████████   │  ← future frame
+  └─────────────────────────────────────────────────┘
+```
+
+- Left = L0 (bass, black/yellow/blue)
+- Right = L2 (high, full palette)
+- Center horizontal line = camera window = current audio frame
+- Forward playback: strip scrolls upward (past moves up, future arrives from below)
+- Reverse playback: strip scrolls downward
+- Scratch: strip follows hand movement directly
+
+This display is honest to what the technology is. The DJ is not manipulating a spinning circle — they are moving a tape past a head. The disc form factor is a design decision about storage; the strip is the actual instrument interface.
+
+### 12.9 Variable rate playback — real-time pitch control
 
 Rotation speed is measured in real time by the rig camera watching clock track dots pass the read window. This measurement IS the tempo — not encoded in the disc, derived from physics.
 
