@@ -2356,17 +2356,25 @@ python3 dsa_cli.py decode test.dsa -o test.straight.wav
 
 #### Tier 1 — Screen photograph (tests optics, no printing)
 
+**Why a short segment, not the full strip:**
+
+The full 432-frame strip is 3496 px wide. On a 13" MacBook (224 DPI, 11.3") displayed fullscreen it scales to 0.72×, leaving each cell_w=8 column at only ~6px on screen. A phone photograph of a 6px cell resolves to 2–3px — not enough. By rendering a 100-frame segment (800 px wide) the same display gives ~3.7× zoom → ~29px per cell, comfortably photographable.
+
+Rule: **displayed cell width on screen ≥ 20px.** For a given display, max frames = `(screen_px − 40) / cell_w`. For a 13" MacBook this is ~310 frames at cell_w=8, but also the strip height must be at least 200px on screen to be photographable easily — so a 100-frame subset is a practical first test.
+
 **Setup — generate readable strip (one-time):**
 
 ```bash
 # Re-encode at 32 kbps to a fresh disc layout
 python3 dsa_cli.py disc test.wav -b 32
 
-# Render readable strip (cell_w=8) with fiducials at 300 DPI
+# Render 100-frame readable segment (cell_w=8) with fiducials
 python3 dsa_strip.py test.disc.json \
   --cell-w 8 --height 8 --fiducials --strip-dpi 300 \
+  --start 0 --end 100 \
   --out test.readable.strip.png
-# → test.readable.strip.png  (3496×428 px, ~29×3.3 cm physical at 300 DPI)
+# → test.readable.strip.png  (800×428 px)
+# On a 13" MacBook fullscreen: ~3.7× zoom → ~29px per cell — good for phone photo
 ```
 
 **Procedure:**
@@ -2378,8 +2386,9 @@ python3 dsa_strip.py test.disc.json \
 5. Run the reader on the best photo:
 
 ```bash
+# --start/--end must match the values used when rendering the strip.
 python3 dsa_camera.py IMG_xxxx.jpg test.disc.json \
-  --cell-w 8 \
+  --cell-w 8 --start 0 --end 100 \
   --save-warped screen_warped.png \
   --out-overlay screen_overlay.png \
   --conf-map screen_confmap.png \

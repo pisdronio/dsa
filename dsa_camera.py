@@ -582,6 +582,12 @@ def main():
     p.add_argument('photo',   help='Photo of printed DSA strip (JPG/PNG)')
     p.add_argument('layout',  help='.disc.json layout file (from dsa_disc.py)')
 
+    p.add_argument('--start',    type=int,   default=0,
+                   help='First frame index in the photographed strip (default: 0). '
+                        'Must match --start used with dsa_strip.py.')
+    p.add_argument('--end',      type=int,   default=None,
+                   help='Last frame index (exclusive) in the photographed strip '
+                        '(default: all frames). Must match --end used with dsa_strip.py.')
     p.add_argument('--cell-h',   type=int,   default=8,
                    help='Pixel height per band row used when printing (default: 8)')
     p.add_argument('--cell-w',   type=int,   default=1,
@@ -635,10 +641,25 @@ def main():
     print(f"  Loading layout {Path(args.layout).name} ...", end=' ', flush=True)
     with open(args.layout) as f:
         layout = json.load(f)
-    n_frames   = layout['n_frames']
-    n_bands    = layout['n_bands']
-    print(f"done  ({n_frames} frames, {n_bands} bands, "
+    n_bands      = layout['n_bands']
+    frame_start  = args.start
+    frame_end    = args.end if args.end is not None else layout['n_frames']
+    frame_end    = min(frame_end, layout['n_frames'])
+    n_frames     = frame_end - frame_start   # frames actually in the photographed strip
+    print(f"done  ({layout['n_frames']} frames total, reading "
+          f"{n_frames} [{frame_start}:{frame_end}], {n_bands} bands, "
           f"{layout['duration_s']:.1f}s)")
+
+    # Build a slice-view of the layout for the photographed segment.
+    # frame_idx values are remapped to 0-based within the slice so that
+    # read_strip and compare_layout index correctly into their arrays.
+    layout_slice = dict(layout)
+    layout_slice['n_frames'] = n_frames
+    layout_slice['frames'] = [
+        dict(fd, frame_idx=fd['frame_idx'] - frame_start)
+        for fd in layout['frames']
+        if frame_start <= fd['frame_idx'] < frame_end
+    ]
 
     # ── Compute border ────────────────────────────────────────────────────────
 
@@ -729,13 +750,13 @@ def main():
 
     print()
     steep_read, dir_read, conf_frame, alpha = read_strip(
-        warped, layout, cell_h, border_px, cell_w=args.cell_w)
+        warped, layout_slice, cell_h, border_px, cell_w=args.cell_w)
 
     # ── Accuracy report ───────────────────────────────────────────────────────
 
     print()
     print("  ── Read accuracy (vs original disc.json) ─────")
-    metrics = compare_layout(layout, steep_read, dir_read)
+    metrics = compare_layout(layout_slice, steep_read, dir_read)
     print(f"  Steepness MAE:        {metrics['steepness_mae']:.6f}")
     print(f"  Steepness max error:  {metrics['steepness_max_err']:.6f}")
     print(f"  Direction accuracy:   {metrics['direction_accuracy']*100:.2f}%  "
@@ -767,11 +788,11 @@ def main():
 
     if args.out_overlay:
         print()
-        save_confidence_overlay(warped, conf_frame, layout,
+        save_confidence_overlay(warped, conf_frame, layout_slice,
                                  cell_h, border_px, args.out_overlay)
 
     if args.conf_map:
-        save_confidence_map(conf_frame, layout, args.conf_map)
+        save_confidence_map(conf_frame, layout_slice, args.conf_map)
 
     if args.out_json:
         result = {
