@@ -243,26 +243,20 @@ def _parse_manual_corners(corners_str: str) -> np.ndarray:
 
 def _canonical_corners(n_frames: int, n_bands: int,
                         cell_h: int, border_px: int,
-                        corner_frac: float) -> np.ndarray:
+                        strip_dpi: int) -> np.ndarray:
     """
     Returns the expected [TL, TR, BR, BL] corner *centre* positions in the
     canonical (bordered) strip image, matching dsa_strip.py fiducial placement.
+    corner_px = round(5mm × dpi/25.4) — must match dsa_strip.py exactly.
     """
     content_h  = n_bands * cell_h + 2 * SEP_PX
     new_w      = n_frames + 2 * border_px
     new_h      = content_h + 2 * border_px
-
-    # corner_px ≈ corner_frac × shorter side (printed); stored in layout via border.
-    # The actual corner square size is stored inside the bordered image — use
-    # border_px as a proxy (corners are ≥ border_px in both directions).
-    # Centre of TL square is at (cp/2, cp/2).  We estimate cp from the canonical
-    # image width using the same fraction used during detection.
-    cp = border_px   # corners are drawn flush with the edge, size = corner_px
-    # True canonical corner centres:
-    tl = [cp / 2.0,       cp / 2.0      ]
-    tr = [new_w - cp / 2.0, cp / 2.0    ]
-    br = [new_w - cp / 2.0, new_h - cp / 2.0]
-    bl = [cp / 2.0,       new_h - cp / 2.0]
+    cp         = int(round(5.0 * strip_dpi / 25.4))   # 5mm corner squares
+    tl = [cp / 2.0,             cp / 2.0            ]
+    tr = [new_w - cp / 2.0,     cp / 2.0            ]
+    br = [new_w - cp / 2.0,     new_h - cp / 2.0    ]
+    bl = [cp / 2.0,             new_h - cp / 2.0    ]
     return np.float32([tl, tr, br, bl])
 
 
@@ -679,17 +673,22 @@ def main():
 
     # ── Warp to canonical space ───────────────────────────────────────────────
 
-    # We map detected corner centres → canonical corner centres.
-    # canonical corner centre positions (TL, TR, BR, BL):
-    # These must match dsa_strip.py: corners are corner_px×corner_px squares
-    # at the image edge.  We estimate corner_px ≈ border_px for the centre calc.
-    cp = border_px   # approximation; corners drawn at outer edge
+    # corner_px matches dsa_strip.py exactly: 5mm × (dpi / 25.4)
+    # At 300 DPI → corner_px ≈ 59.  This is NOT border_px (which is ~20).
+    px_per_mm  = args.strip_dpi / 25.4
+    corner_px  = int(round(5.0 * px_per_mm))
+    cp = corner_px
+
+    # Map detected corner centres in photo → canonical corner centres.
+    # dsa_strip.py draws each corner square flush with the image edge,
+    # so the centre of TL square is at (cp/2, cp/2), etc.
     dst_corners = np.float32([
         [cp / 2.0,            cp / 2.0           ],   # TL centre
         [canon_w - cp / 2.0,  cp / 2.0           ],   # TR centre
         [canon_w - cp / 2.0,  canon_h - cp / 2.0 ],   # BR centre
         [cp / 2.0,            canon_h - cp / 2.0 ],   # BL centre
     ])
+    print(f"  Corner size: {corner_px}px ({5.0:.0f}mm at {args.strip_dpi} DPI)")
 
     print(f"  Warping to {canon_w}×{canon_h}...", end=' ', flush=True)
     warped = _warp_strip(photo_rgb, src_corners, dst_corners, canon_w, canon_h)
