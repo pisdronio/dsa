@@ -259,10 +259,19 @@ GNU General Public License v3.0 — see [LICENSE](./LICENSE)
 DSA is free. Free to use, implement, modify, and distribute.
 Any derivative must remain open. No proprietary forks.
 
+### Format specification license
+
+The DSA format specification is separately licensed under **CC BY-SA 4.0** at:
+
+**[github.com/pisdronio/dsa-spec](https://github.com/pisdronio/dsa-spec)**
+
+This implementation is the normative reference for that specification. The separation means: the spec is open for anyone to implement under any license — the GPL applies only to this codebase, not to independent implementations that comply with the spec.
+
 ---
 
 ## Related
 
+- [dsa-spec](https://github.com/pisdronio/dsa-spec) — DSA format specification (CC BY-SA 4.0)
 - [digilog-spec](https://github.com/pisdronio/digilog-spec) — the Digilog format specification
 - [Opus codec](https://opus-codec.org) — used in Digilog v0.1 before DSA is complete
 - [Xiph.org](https://xiph.org) — philosophical allies, creators of Opus/Vorbis/FLAC
