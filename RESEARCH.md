@@ -1777,6 +1777,125 @@ This section records research directions that extend beyond DSA audio into adjac
 
 **Target:** With (a) + (b) + (d) implemented, DSA should exceed Opus at 32 kbps on tonal signals and match Opus on broadband signals. Exceeding Opus on broadband at all bitrates would require a fundamental change to the transform (longer window, higher frequency resolution) and is not a target for v1.
 
+### 14.4 DTA: Digilog Tape Architecture
+
+**Status:** Research direction — identified April 2026 from the tape-head mental model (Section 12.8).
+
+**Concept:** DTA uses the identical DSA codec and bitstream, but replaces the spiral disc geometry with a linear strip — printed on physical tape stock and played through a fixed camera window. The strip format already exists: `dsa_strip.py` produces a valid DTA tape image with no changes required.
+
+#### 14.4.1 Why the tape geometry is simpler than the disc
+
+The disc requires radial geometry, RPM calibration, clock track detection, and spiral revolution tracking before a single audio frame can be read. The tape requires none of this. Every frame is identical width. Linear constant velocity means no radial compensation, no arc-width variation between inner and outer rings, no revolution indexing. The camera window IS the tape head. The strip scrolls through it.
+
+```
+Disc read prerequisites:
+  1. Detect disc in frame (circle detection)
+  2. Find center pixel
+  3. Measure radius → mm/px scale
+  4. Read clock track → current RPM
+  5. Compute frame_angle from n_frames and RPM
+  6. Map pixel (r, θ) → (frame, band, arc_pos)
+
+Tape read prerequisites:
+  1. Strip is in frame
+  2. Read current row → current frame
+```
+
+The tape read is a direct pixel-row-to-audio-frame mapping. It is the simplest possible reader architecture for this codec.
+
+#### 14.4.2 Physical format
+
+**Printed tape on paper or label stock:**
+- Standard thermal label roll (57mm wide, sold for receipt printers) — wide enough for 48 bands at practical resolution
+- Inkjet-printable paper roll (available in 80–210mm widths)
+- Print length: at 300 DPI, the 30s Guerrero test strip is 109mm × 33mm (10.9 × 3.3cm) — this fits on a single receipt
+
+The strip height (33mm at 300 DPI, 8px/band, 48 bands) maps to the 48 frequency bands. The strip width (109mm) maps to 1293 frames of audio at 300 DPI. Print length scales directly with track duration — 3.6mm per second of audio at 300 DPI, 1.8mm/s at 600 DPI.
+
+**3D printed cassette shell:**
+
+A standard Compact Cassette shell (ISO 1864) provides all the mechanical infrastructure for a DTA player:
+
+```
+ISO Compact Cassette key dimensions:
+  Shell:        100mm × 64mm × 12mm
+  Tape width:   3.81mm (audio), 6.3mm (video) — DTA uses full 48-band width
+  Spool hub:    ø11mm inner, ø22mm outer  (NAB standard)
+  Head window:  12mm × 5mm aperture in shell face
+  Tape path:    between guide posts, past head window
+  Tape speed:   4.76 cm/s (standard), 9.52 cm/s (high speed)
+```
+
+A DTA cassette shell would be identical in external dimensions to a standard Compact Cassette — fitting existing cassette decks, cases, and players mechanically — with two modifications:
+
+1. **Head window enlarged** to fit a phone camera lens (approx. 10mm × 10mm aperture on the face of the shell, aligned with the tape path).
+2. **Tape width**: standard cassette tape (3.81mm) is too narrow for 48 bands at useful resolution. DTA cassette uses a wider spool format (10–30mm tape width) within the same outer shell, which requires custom spools but no change to external dimensions.
+
+Alternatively: the shell can be printed at 2× scale (200mm × 128mm × 24mm) with standard phone-camera dimensions for the aperture. This loses cassette-deck compatibility but gains readability.
+
+**Tape speed and frame density at cassette speed:**
+
+At standard cassette speed (4.76 cm/s = 47.6mm/s) and 300 DPI (11.81 px/mm):
+```
+Pixels per second:  47.6mm/s × 11.81px/mm = 562 px/s
+Audio frame rate:   43.07 fps
+Required px/frame:  562 / 43.07 = 13.05 px/frame  (≈ 1.1mm/frame at 300 DPI)
+```
+
+At 13px/frame width and 48 bands tall, each frame cell is 13×1px in the raw strip — readable but tight. At 600 DPI:
+```
+Pixels per second:  47.6mm/s × 23.62px/mm = 1124 px/s
+Required px/frame:  1124 / 43.07 = 26.1 px/frame  (≈ 1.1mm/frame at 600 DPI)
+```
+
+The physical mm/frame is the same (1.1mm) regardless of DPI — it is set by the tape speed. The DPI determines how many pixels resolve that 1.1mm. At 600 DPI, 26px/frame is comfortably above the 4px minimum.
+
+For 30s of audio at 4.76 cm/s: 30s × 47.6mm/s = **1,428mm = 1.43 metres of tape**. This fits on a standard cassette spool at C-60 tape thickness (8µm). A C-30 cassette would hold approximately 17s of DTA audio.
+
+#### 14.4.3 Playback mechanics and the tape-head model
+
+DTA playback is the tape-head model (Section 12.8) made literal:
+
+```
+Forward:  tape advances through camera window → frames in order → forward audio
+Reverse:  tape rewinds through window → frames in reverse → true reverse audio
+Fast fwd: tape moves faster → frames arrive faster → pitch and tempo rise
+Slow:     tape moves slower → frames arrive slower → pitch and tempo fall
+Pause:    tape stops → same frame held → last sound sustained, decays to silence
+```
+
+There is no RPM conversion, no clock track, no frame_angle calculation. The camera reads whatever row is currently in the aperture. If the row is frame 247, the audio output is frame 247. Time is tape position, not disc rotation.
+
+Speed detection is direct: measure the pixel displacement between consecutive camera frames, divide by px/frame, derive playback rate. This is simpler than clock-track counting on the disc.
+
+#### 14.4.4 Reader app change for DTA
+
+The reader app (Section 17.5) requires one architecture change for tape vs disc:
+
+**Disc:** polar coordinate sampling — map image pixel to (r, θ) → (band, frame)
+**Tape:** row sampling — each camera row = one audio frame, columns = 48 bands
+
+The tape reader is a degenerate case of the strip reader: no homography required if the phone is held level; a simple rectangle detection (four fiducial corners already specified in Section 17.2) corrects for any tilt. The cell sampling is identical: two samples per (frame, band) cell at arc_pos 0.25 and 0.75 — for tape, "arc_pos" is the horizontal position within the frame column (left 25% and right 75% of the cell width).
+
+The live display in the tape reader app is identical to the strip animator (Section 12.8, `dsa_animate.py --mode tape`): a vertically scrolling ribbon with the camera window highlighted. For DTA, this is not a simulation of what the reader sees — it IS what the reader sees, direct passthrough from camera to screen.
+
+#### 14.4.5 DTA vs DSA — format relationship
+
+DTA is not a separate format. It is DSA with a different physical substrate:
+
+| Property | DSA (disc) | DTA (tape) |
+|----------|-----------|-----------|
+| Codec | DSA1 bitstream | DSA1 bitstream (identical) |
+| Geometry | Spiral, concentric bands | Linear strip |
+| Frame width | Variable (inner < outer) | Constant |
+| Read speed | RPM-dependent | Tape speed |
+| Clock track | Required (separate ring) | Not needed |
+| Max duration | ~30s at 300 DPI (disc limit) | Unlimited (spool length) |
+| Physical form | 290mm disc | Cassette, roll, or label |
+| Scratch/reverse | Via turntable | Via hand or motor |
+
+The existing `dsa_strip.py` output is a DTA master. No new encoder, decoder, or bitstream is required. The only new components needed are the physical cassette shell design and the tape reader app (which is a simplification of the disc reader, not an addition).
+
 ---
 
 ## 15. Psychovisual Encoding — Color Theory, Retinal Persistence, and Real-World Readability
