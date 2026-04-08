@@ -10,6 +10,7 @@ Subcommands
   bench    benchmark DSA vs Opus at multiple bitrates
   info     print header info for a .dsa file
   camera   read a photograph of a printed strip → confidence + accuracy report
+  live     single-column sampler — the actual instrument (simulate / scan / webcam)
 
 Usage
 -----
@@ -20,7 +21,8 @@ Usage
   python3 dsa_cli.py bench  --quick
   python3 dsa_cli.py info   song.dsa
   python3 dsa_cli.py camera photo.jpg song.disc.json
-  python3 dsa_cli.py camera photo.jpg song.disc.json --save-warped warped.png
+  python3 dsa_cli.py live   simulate strip.png song.disc.json song.dsa
+  python3 dsa_cli.py live   scan     strip.png song.disc.json song.dsa --out out.wav
 """
 
 import argparse
@@ -222,6 +224,33 @@ def cmd_info(args):
     print()
 
 
+# ─── live ─────────────────────────────────────────────────────────────────────
+
+def cmd_live(args):
+    import dsa_live as live
+    lm = args.live_mode
+
+    if lm == 'simulate':
+        reverse = args.reverse or (args.speed < 0)
+        speed   = abs(args.speed)
+        live.run_simulate(args.strip, args.layout, args.dsa,
+                          speed=speed, reverse=reverse,
+                          cell_h=args.cell_h, border_px=args.border,
+                          frame_start=args.start, frame_end=args.end,
+                          out_wav=args.out,
+                          display=not args.no_display,
+                          fps=args.fps)
+
+    elif lm == 'scan':
+        out = args.out or str(Path(args.dsa).with_suffix('.live.wav'))
+        live.run_scan(args.strip, args.layout, args.dsa,
+                      cell_h=args.cell_h, border_px=args.border,
+                      out_wav=out)
+
+    elif lm == 'webcam':
+        live.run_webcam(args.layout, args.dsa)
+
+
 # ─── camera ───────────────────────────────────────────────────────────────────
 
 def cmd_camera(args):
@@ -379,6 +408,35 @@ examples:
 
     args = parser.parse_args()
 
+    # ── live ──
+    p_live = sub.add_parser('live',
+                             help='single-column sampler — the actual instrument')
+    live_sub = p_live.add_subparsers(dest='live_mode', metavar='mode')
+    live_sub.required = True
+
+    ls = live_sub.add_parser('simulate', help='simulate tape advancing (no camera)')
+    ls.add_argument('strip');  ls.add_argument('layout');  ls.add_argument('dsa')
+    ls.add_argument('--speed',      type=float, default=1.0)
+    ls.add_argument('--reverse',    action='store_true')
+    ls.add_argument('--cell-h',     type=int,   default=8)
+    ls.add_argument('--border',     type=int,   default=0)
+    ls.add_argument('--start',      type=int,   default=0)
+    ls.add_argument('--end',        type=int,   default=None)
+    ls.add_argument('--out',        type=str,   default=None)
+    ls.add_argument('--no-display', action='store_true')
+    ls.add_argument('--fps',        type=float, default=30.0)
+
+    lsc = live_sub.add_parser('scan', help='read full strip, output WAV')
+    lsc.add_argument('strip');  lsc.add_argument('layout');  lsc.add_argument('dsa')
+    lsc.add_argument('--cell-h', type=int, default=8)
+    lsc.add_argument('--border', type=int, default=0)
+    lsc.add_argument('--out',    type=str, default=None)
+
+    lwc = live_sub.add_parser('webcam', help='live camera reader [planned]')
+    lwc.add_argument('layout');  lwc.add_argument('dsa')
+
+    args = parser.parse_args()
+
     dispatch = {
         'encode': cmd_encode,
         'decode': cmd_decode,
@@ -386,6 +444,7 @@ examples:
         'bench':  cmd_bench,
         'info':   cmd_info,
         'camera': cmd_camera,
+        'live':   cmd_live,
     }
     dispatch[args.command](args)
 

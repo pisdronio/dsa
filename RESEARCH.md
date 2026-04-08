@@ -940,6 +940,37 @@ This display is honest to what the technology is. The DJ is not manipulating a s
 
 Rotation speed is measured in real time by the rig camera watching clock track dots pass the read window. This measurement IS the tempo — not encoded in the disc, derived from physics.
 
+### 12.10 Unified timecode architecture — comparison with DVS systems
+
+Digital Vinyl Systems (DVS) such as Serato Scratch and Traktor Scratch use timecode vinyl: a dedicated record that carries a control signal (pilot tone + absolute position encoding) which is routed to software. The audio content lives in a computer; the vinyl is only the controller.
+
+DSA's architecture is fundamentally different — and more deeply integrated:
+
+| Signal | DVS timecode vinyl | DSA disc / strip |
+|--------|-------------------|------------------|
+| Speed | Pilot tone period (1kHz reference) | Column displacement / clock-track dot spacing |
+| Direction | Pilot tone phase | Sign of column displacement (strip) or direction field (gradient cells) |
+| Absolute position | Dedicated position track encoded in groove | Frame index = column x-coordinate (strip) or geometric angle (disc) |
+| Sync points | N/A (timecode is continuous) | K-frames every 8 frames (~185ms) — "drop needle anywhere" §4.3 |
+| Content | Separate — stored in computer | **Same physical surface — the visual IS the audio** |
+| Routing | Vinyl → interface → software → digital track | Disc/strip → camera → decoder → audio directly |
+
+**DVS separates control from content.** DSA unifies them. The disc is simultaneously the timecode AND the music. There is no routing — the physical medium decodes directly to audio.
+
+This unification was a design requirement from the start:
+- K-frame every 8 frames → "drop needle anywhere" (§4.3) — arbitrary seek within one GOP
+- Bidirectional B-frames → reverse scratch at full fidelity (§5.4)
+- Reference markers (8 per revolution, 45° spacing) → 8 absolute position anchors
+- Clock track ring → continuous speed measurement independent of audio content
+
+**What DVS has that DSA currently lacks (future format work):**
+
+1. **Near-zero-speed position detection.** At very slow scratch speeds (<0.5 RPM), column displacement per video frame is sub-pixel. DVS timecode still gives absolute position from the encoded track. DSA requires visible motion for speed estimation. A dedicated pilot-tone ring (one ring with a known fixed pattern, sampled independently of audio content) would solve this.
+
+2. **Per-cell redundant position counter.** The frame index is implicit in the disc geometry (column x = frame index). It is not encoded redundantly in the visual cells. If the homography drifts (camera moves), the frame assignment drifts silently. Encoding a sub-band of one ring as a low-density frame counter (similar to SMPTE timecode) would provide an independent position cross-check.
+
+**The live reader (`dsa_live.py`)** implements the real-time single-column sampler that embodies this architecture. It is the actual instrument — not the batch photo reader (`dsa_camera.py`, which is a calibration tool). The tape-head window extracts one column per video frame; speed and position emerge from the column displacement over time.
+
 ```
 Normal speed (33rpm):    consume frames at nominal rate, 23.2ms/frame
 Faster (scratch fwd):    consume frames faster — pitch rises naturally
