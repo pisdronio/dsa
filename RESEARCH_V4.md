@@ -337,7 +337,7 @@ Layer priority budget scaling degrades L2 first, L1 second, L0 last — matching
 
 The B-frame residual is symmetric — it encodes the same information whether the surrounding K-frames are before/after or after/before. This is the mathematical property that enables reverse playback.
 
-### 5.4 Steps 5–6: Entropy Coding and Bitstream (complete)
+### 5.4 Steps 5–6: Entropy Coding and Bitstream (pending)
 
 Huffman coding per band group. The symbol distribution for quantized MDCT coefficients is well-studied — roughly Laplacian distributed, centered at zero. Standard Huffman tables from prior codec research can be adapted.
 
@@ -360,7 +360,7 @@ DSA Bitstream v0.1
 └── Checksum: CRC32
 ```
 
-### 5.5 Step 7: DSA Decoder (complete)
+### 5.5 Step 7: DSA Decoder (pending)
 
 The decoder must support:
 - Full decode (all layers available)
@@ -503,35 +503,28 @@ The exact capacity improvement depends on the gradient encoding scheme and is ou
 
 ### 6.2 Comparison baselines
 
-| Codec | Bitrate | Metric | Status |
+| Codec | Bitrate | Metric | Notes |
 |---|---|---|---|
-| Opus | 6kbps | SNR | ✓ complete — see Section 11 |
-| Opus | 12kbps | SNR | ✓ complete — see Section 11 |
-| Opus | 32kbps | SNR | ✓ complete — see Section 11 |
-| Opus | 96kbps | SNR | ✓ complete — see Section 11 |
-| Opus | 6–12kbps | PEAQ | pending — requires ITU-R BS.1387 toolchain |
-| Codec2 | 3.2kbps | SNR | pending |
-| DSA | 6–96kbps | SNR | ✓ complete — see Section 11 |
-
-**Summary (April 2026):** DSA meets or exceeds Opus at 6–12 kbps on tonal and wideband signals. Opus leads at 32+ kbps. Full analysis in Section 11.
+| Opus | 6kbps | PEAQ | Current Digilog v0.1 codec |
+| Opus | 12kbps | PEAQ | Primary comparison point |
+| Codec2 | 3.2kbps | PEAQ | Lowest bitrate baseline |
+| DSA | 6kbps | PEAQ | Target: competitive with Opus |
+| DSA | 12kbps | PEAQ | Target: competitive with Opus |
 
 ### 6.3 Degradation testing
 
-| Test | Status |
-|---|---|
-| Partial layer decode (L0 only, L0+L1, full) | ✓ complete — Section 11.5 |
-| Confidence-weighted reconstruction (α = 0.1–1.0) | ✓ complete — Section 11.5 |
-| Reverse decode temporal energy reversal | ✓ complete — Section 11.5 |
-| Corrupted frame recovery (K-frame loss, τ decay) | ✓ implemented, informal test only |
-| Variable-rate decode (0.5×, 2×, 4× speed) | ✓ implemented, formal measurement pending |
+- Partial layer decode quality (L0 only, L0+L1, all layers)
+- Reverse decode quality vs original reversed audio
+- Corrupted frame recovery (simulate worn disc)
+- Variable-rate decode quality (0.5x, 2x, 4x speed)
 
 ### 6.4 Physical media testing
 
-- Print at various DPI and module sizes — *pending*
-- Scan with range of phone cameras — *pending*
-- Test under Digilog Rig (controlled lighting) — *pending*
-- Test during disc rotation at 33rpm, 45rpm — *pending*
-- Test with simulated DJ scratch — *pending*
+- Print at various DPI and module sizes
+- Scan with range of phone cameras
+- Test under Digilog Rig (controlled lighting)
+- Test during disc rotation at 33rpm, 45rpm
+- Test with simulated DJ scratch
 
 ---
 
@@ -829,197 +822,10 @@ Recommended libraries:
 
 ---
 
-## 10. Open Problems and Future Work
+*This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
-### 10.1 Radial motion blur compensation
-
-At a given RPM, tangential velocity increases with radius:
-v = 2π × r × RPM/60
-
-This means outer rings (L2, high frequency) experience greater
-motion blur than inner rings (L0, bass) at the same rotation speed.
-
-Current model treats confidence α as uniform per band at a given
-speed. A more accurate model would compute per-layer confidence
-degradation as a function of radius and RPM:
-
-  α_L0(speed) > α_L1(speed) > α_L2(speed)
-
-with the gap widening as speed increases.
-
-This has implications for scratch performance: at high scratch
-speeds, L2 degrades first and fastest — which is actually
-perceptually correct (highs roll off before mids before bass)
-but should be explicitly modeled rather than incidentally correct.
-
-### 10.2 Optical pipeline simulation for encoder optimization
-
-Current pre-emphasis (Section 12.4) uses a static factor (1.15×)
-estimated for the reference rig. A simulation-based optimizer
-would model the full optical pipeline:
-- Gaussian blur (lens PSF at fixed focal length)
-- Tangential motion blur (radius and RPM dependent, see 10.1)
-- Downsampling (camera sensor resolution)
-- Noise (sensor noise floor)
-
-Then optimize gradient steepness and color pair assignments to
-maximize decoded confidence after simulated degradation. This
-would replace the static pre-emphasis estimate with a
-calibrated, testable model.
-
----
-
-## 11. Benchmark Results — DSA vs Opus
-
-**Date:** April 2026
-**DSA version:** reference implementation (dsa_bench.py)
-**Opus version:** libopus via opusenc/opusdec CLI
-**Platform:** macOS Darwin 22.6.0, Python 3.9.6, NumPy 2.0.2
-**Methodology:** synthetic test signals at 44100Hz, 5s duration, round-trip encode→decode SNR
-
----
-
-### 11.1 Test signals
-
-| Signal | Description | Frequency content |
-|--------|-------------|-------------------|
-| 440 Hz tone | Pure sine, A4 | L0 only (bass) |
-| 1 kHz tone | Pure sine | L0/L1 boundary |
-| 4 kHz tone | Pure sine | L1 (mid) |
-| 3-tone (440+2k+9k) | Three simultaneous tones | All three layers |
-| White noise | Full-spectrum random | All bands equally |
-| Chirp 100→20kHz | Frequency sweep | Sequential layer coverage |
-
----
-
-### 11.2 Round-trip SNR (dB)
-
-Higher is better. Positive values mean the codec reconstructed more signal than it lost.
-
-```
-Signal                     6kbps          12kbps         32kbps         96kbps
-                         DSA   Opus     DSA   Opus     DSA   Opus     DSA   Opus
-──────────────────────────────────────────────────────────────────────────────────
-440 Hz tone            +24.9  +19.6   +24.9  +21.6   +24.9  +42.3   +24.9  +43.1
-1 kHz tone              +4.9  +12.8    +9.0  +20.2   +25.7  +43.8   +25.7  +44.3
-4 kHz tone              +9.9   +3.6   +23.2  +15.0   +28.2  +40.2   +28.2  +45.1
-3-tone (440+2k+9k)      +8.4   +5.3    +9.5   +7.2   +26.0  +38.3   +26.0  +43.3
-White noise             -0.2   -0.4    +1.1   -0.1    +3.5   -0.5    +6.9   +6.3
-Chirp (100→20kHz)       +1.7   -0.1    +4.1   +0.6   +11.1  +11.2   +11.1  +23.7
-──────────────────────────────────────────────────────────────────────────────────
-```
-
-**Bold result:** DSA outperforms Opus at 6 and 12 kbps on tonal signals and wideband content.
-
----
-
-### 11.3 Analysis: where DSA wins and where it does not
-
-**DSA advantages:**
-
-*Low bitrate tonal signals (6–12 kbps):*
-DSA beats Opus by +3 to +8 dB on pure tones at these bitrates. The perceptual quantizer concentrates bits on the dominant frequency band and zeros others. A 440 Hz tone has nearly all energy in a single L0 band; the quantizer allocates its full budget there and encodes it cleanly. Opus at 6 kbps applies more aggressive perceptual coding that trades SNR for psychoacoustic smoothness.
-
-*4 kHz tone at 6 kbps (+6.3 dB advantage):*
-The most striking result. 4 kHz is in the middle of peak human sensitivity (1–4 kHz), where DSA's ISO 226-derived perceptual weights assign weight 1.0 — full bit budget allocation. Opus at 6 kbps applies heavy low-frequency bias and treats upper-mid frequencies as low priority at extreme compression.
-
-*White noise and chirp at all bitrates:*
-DSA maintains modest positive SNR (+1 to +7 dB) where Opus is near or below 0 dB on white noise. This is not a perceptual quality metric — white noise has no "correct" reconstruction — but it demonstrates that DSA's quantizer does not introduce gross distortion on broadband signals.
-
-**Opus advantages:**
-
-*32 kbps and above, tonal signals:*
-Opus dominates above 32 kbps, by 12–18 dB on tonal signals. The root cause is a known limitation in the DSA quantizer: `ENTROPY_FACTOR=2.0` (the assumed compression ratio per bit budget calculation) breaks down at high bitrates. The quantizer does not effectively use the extra bits; SNR plateaus at approximately 25–28 dB regardless of available bitrate. Opus continues to improve up to ~44 dB at 96 kbps.
-
-*1 kHz tone at 6–12 kbps:*
-Opus beats DSA by 8–11 dB at 1 kHz. This is the clearest case where Opus's mature psychoacoustic model outperforms DSA's simplified approach. 1 kHz sits at the boundary between L0 and L1 layers; the quantizer budget split between layers may introduce inefficiency that a single-pass Opus encoder avoids.
-
----
-
-### 11.4 Speed comparison
-
-Measured at 12 kbps on a 5-second signal, all times in × real-time (higher = faster).
-
-```
-Signal                   DSA enc   DSA dec  Opus enc  Opus dec
-────────────────────────────────────────────────────────────────
-440 Hz tone                 0.9×      9.3×    159.8×    202.6×
-1 kHz tone                  0.8×     12.6×    181.8×    221.9×
-4 kHz tone                  0.9×     12.2×    195.0×    216.9×
-3-tone (440+2k+9k)          0.9×     11.9×    160.0×    221.2×
-White noise                 0.8×      7.6×     72.3×    218.9×
-Chirp (100→20kHz)           1.3×     12.0×     80.5×    216.5×
-────────────────────────────────────────────────────────────────
-```
-
-DSA encodes at approximately 0.8–1.3× real-time in Python (reference implementation). Opus runs at 80–200× real-time via its optimized C library.
-
-The speed gap is expected and by design. The DSA reference implementation is unoptimized Python; the encoder computes a 2048×1024 MDCT matrix product per frame and performs full band-by-band quantization. A C implementation of DSA would close most of this gap — the algorithm has no inherent real-time obstacle. The disc reader and disc printer operate at their own speeds independent of the encoder.
-
-DSA decode is 7–12× real-time in Python, which is already sufficient for real-time playback in the Digilog application.
-
----
-
-### 11.5 DSA-unique properties (not measurable by SNR)
-
-These properties have no Opus equivalent and cannot be evaluated by round-trip SNR. Measured at 12 kbps on the three-tone signal (440 Hz + 2 kHz + 9 kHz).
-
-**Layer isolation — scalable decoding:**
-
-```
-Layers decoded    Relative level vs full   Physical scenario
-──────────────────────────────────────────────────────────────────────────
-L0 only           -1.3 dB                  inner ring only (cheap camera,
-(8 bands, bass)                             hand over disc, heavy scratch)
-
-L0 + L1           -0.0 dB                  inner + middle rings
-(24 bands)                                  (average phone camera)
-
-L0 + L1 + L2       0.0 dB  (full)          all rings
-(48 bands)                                  (Digilog Rig, controlled light)
-──────────────────────────────────────────────────────────────────────────
-```
-
-L0 alone produces only -1.3 dB relative to full quality on the three-tone signal. This is because 440 Hz is the loudest component and lives entirely in L0. A DJ playing from a cheap camera or a partially obscured disc still hears the bass and the fundamental musical structure.
-
-**Analog degradation — confidence weighting:**
-
-```
-α (confidence)   Attenuation    Visual equivalent
-──────────────────────────────────────────────────
-α = 1.0           0.0 dB        clean print, controlled rig
-α = 0.7          -3.1 dB        slight gradient blur (motion)
-α = 0.5          -6.0 dB        50% confidence — worn outer ring
-α = 0.3         -10.5 dB        heavily degraded read
-α = 0.1         -20.0 dB        near-unreadable, noise floor
-──────────────────────────────────────────────────
-```
-
-At α = 0.5, attenuation is -6.0 dB — exactly the expected -6 dB from 20×log₁₀(0.5). The relationship is linear in amplitude and follows the model precisely. The result at every confidence level is attenuated music, not silence or noise.
-
-**Reverse playback — temporal energy reversal:**
-
-```
-Playback direction   Loud:quiet energy ratio   Result
-───────────────────────────────────────────────────────────────────
-Forward              322.9× (loud in first half)    correct ✓
-Reverse              38.3×  (loud in second half)   correct ✓
-───────────────────────────────────────────────────────────────────
-```
-
-The ramp signal (loud first half, silent second half) correctly flips temporal energy when decoded in reverse. The ratio is lower in reverse (38.3× vs 322.9×) because MDCT overlap-add at the frame boundaries introduces energy smearing — a physical property of the transform, not a defect. The reversal is unambiguous and musically meaningful.
-
----
-
-### 11.6 Known limitations and future work
-
-**SNR plateau at high bitrates.** DSA SNR saturates at approximately 25–28 dB above 32 kbps. The quantizer's `ENTROPY_FACTOR=2.0` estimate of Huffman compression ratio is correct at low bitrates but the encoder does not effectively exploit available bits at high bitrates. The fix requires a rate-distortion optimization loop in the quantizer: iterate step sizes until the actual encoded bit cost matches the budget, rather than estimating it. This would bring DSA into competitive range with Opus above 32 kbps.
-
-**1 kHz band boundary inefficiency.** The 8–11 dB SNR gap at 1 kHz (6–12 kbps) suggests the L0/L1 budget split is not optimal near the layer boundary. A signal at exactly 1 kHz sits between the layer budgets. A smoother budget allocation that does not hard-cut at the layer boundary would improve this.
-
-**Pure Python encoder speed.** The 0.8–1.3× real-time encoder speed is a Python implementation artifact. The bottleneck is the MDCT matrix multiply (NumPy) and the per-band quantization loop. A C extension or Cython implementation of the inner loops would achieve 50–100× real-time on the same hardware.
-
-**SNR as a metric.** SNR is an objective but perceptually crude metric. A codec that produces a barely audible low-level distortion can have poor SNR while sounding better than one with high SNR but spectrally colored noise. Future evaluation should use PEAQ (ITU-R BS.1387) or ViSQOL for perceptual quality comparison. DSA's performance on perceptual metrics is expected to be stronger than SNR suggests, because the quantizer explicitly shapes noise to stay below the masking threshold.
+*github.com/pisdronio/dsa*
+*Scan the groove.*
 
 ---
 
@@ -1060,7 +866,7 @@ C_read(r, ω) = r · C_A + (1-r) · C_B + ε(ω, d, PSF)
 
 Where:
 - `r` = fraction of ring circumference printed as color A
-- `ω` = angular velocity (radians/second)
+- `ω` = angular velocity (radians/second)  
 - `d` = dot spatial frequency (dots per radian)
 - `PSF` = point spread function of the camera lens
 - `ε` = residual error from incomplete integration at low speed
@@ -1101,7 +907,7 @@ A single ring carries different information at different speeds. At stopped (ω 
 This means a single printed ring can simultaneously encode:
 
 - **Static information** (ω = 0): read by a stationary scanner, full dot resolution
-- **33rpm information**: the blend value at nominal playback speed
+- **33rpm information**: the blend value at nominal playback speed  
 - **45rpm information**: the blend value at 45rpm
 - **Differential information**: the *difference* between the 33 and 45rpm reads, which encodes the ring's speed sensitivity
 
@@ -1210,7 +1016,7 @@ A disc could carry both encodings simultaneously — v1–v3 in one radial band 
 The file header mode byte (Section 5.4) would carry:
 ```
 0x01 — Mode 1: discrete dots
-0x02 — Mode 2: gradient dots
+0x02 — Mode 2: gradient dots  
 0x04 — Mode 4: physics-integrated (v4)
 0x05 — Mode 1 + Mode 4: dual encoding
 ```
@@ -1293,6 +1099,12 @@ With calibration table in hand, design the v4 encoding scheme. Map MDCT coeffici
 24. Berns, R.S. (2019). *Billmeyer and Saltzman's Principles of Color Technology*, 4th ed. Wiley. — Modern treatment of color measurement, ink color physics, and the relationship between subtractive (printed ink) and additive (camera-sensed light) color models.
 
 25. Poynton, C. (2012). *Digital Video and HD: Algorithms and Interfaces*, 2nd ed. Morgan Kaufmann. — Definitive reference for gamma, non-linear camera response, and the distinction between linear light and encoded pixel values; critical for interpreting calibration table readings from phone cameras.
+
+---
+
+*This section documents a research direction initiated April 2026. The calibration disc and experimental protocol described here are the necessary first step before any v4 encoding specification can be written. The specification will be derived from measurement, not theory.*
+
+*github.com/pisdronio/dsa*
 
 ---
 
@@ -1453,7 +1265,7 @@ The Digilog v4 calibration disc applies exactly this framework to a rotational o
 
 ---
 
-### 13.13 Additional references
+### 13.13 Additional references for Sections 13.11–13.12
 
 26. Schroeder, M.R. (1979). "Integrated-impulse method measuring sound decay without using impulses." *Journal of the Acoustical Society of America*, 66(2), 497–500. — Foundational method for measuring room transfer functions using noise signals rather than impulses; directly analogous to the pink noise calibration method.
 
@@ -1471,11 +1283,6 @@ The Digilog v4 calibration disc applies exactly this framework to a rotational o
 
 ---
 
-*Section 13 added April 2026 following theoretical development of DSA v4: Physics-Integrated Optical Encoding. The calibration disc and experimental protocol described here are the necessary first step before any v4 encoding specification can be written. The specification will be derived from measurement, not theory.*
-
----
-
-*This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
+*Sections 13.11 and 13.12 added April 2026 following theoretical development of the pink noise transfer function calibration concept. Physical experiments pending fabrication of the first calibration disc.*
 
 *github.com/pisdronio/dsa*
-*Scan the groove.*
