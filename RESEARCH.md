@@ -1615,6 +1615,196 @@ This section records research directions that extend beyond DSA audio into adjac
 
 ---
 
+## 15. Psychovisual Encoding — Color Theory, Retinal Persistence, and Real-World Readability
+
+**Status:** Research direction — identified April 2026 during visual pipeline development.
+
+---
+
+### 15.1 The current color model is mathematically defined, not perceptually optimized
+
+The DSA v1 color pair assignments (Section 12.2) were selected by human judgment and functional criteria: high-contrast pairs for L0 (Black↔White, Black↔Yellow, Black↔Cyan), complementary pairs for L1 (Red↔Cyan, Blue↔Yellow, Green↔Purple), and full palette for L2. These choices are reasonable but not derived from a perceptual color model.
+
+**The core problem:** two colors with a large RGB Euclidean distance are not necessarily the most perceptually distinct pair to the human eye or a camera sensor under real lighting conditions. RGB space is a device model, not a perceptual model. Empirical observation of the current disc renderer output confirms this: the strip visualization appears low-contrast and visually crude even under controlled conditions, and will degrade further under real-world lighting (ambient color shifts, print ink variation, camera auto-white-balance).
+
+### 15.2 Opponent color theory and perceptual color spaces
+
+The human visual system does not process color as RGB. It uses three opponent channels derived from cone responses:
+
+```
+Luminance channel:   L + M  (brightness, achromatic)
+Red-green channel:   L − M  (red vs. green opponent)
+Blue-yellow channel: S − (L + M)  (blue vs. yellow opponent)
+```
+
+This opponent structure (Hering 1878, confirmed by psychophysics) means that the most perceptually discriminable color pairs are those maximally separated along opponent axes — not those with maximum RGB distance.
+
+**Implication for DSA:** the optimal color pairs for gradient encoding are those that maximize perceptual contrast in the opponent-channel space, not RGB space. This means:
+
+- The red-green channel naturally separates red from cyan and green from purple — consistent with current L1 pairs, but not derived from first principles
+- The blue-yellow channel separates yellow from blue — also consistent with current L1 pairs
+- The luminance channel separates black from white — current L0 primary pair
+
+The current pairs happen to align approximately with opponent axes by intuition. A rigorous derivation would use the CIELAB color space (perceptually uniform, derived from opponent channels) and select pairs maximizing ΔE (perceptual color distance) subject to the constraint that the gradient between them is visually monotonic (no hue reversal at intermediate blend values).
+
+### 15.3 Hue monotonicity constraint
+
+A critical requirement for gradient encoding that is missing from the v1 color model: the gradient between color_a and color_b must be visually monotonic. If the gradient passes through a hue reversal (e.g., red → dark → blue crosses through dark/achromatic and produces ambiguous midpoints), the visual reader cannot reliably determine gradient position from color alone.
+
+In RGB space, linear interpolation between Red (220,50,50) and Cyan (0,210,210) passes through a gray midpoint (110,130,130) — technically monotonic in terms of channel values but perceptually ambiguous near the midpoint. In LCH (Lightness-Chroma-Hue) space, the same interpolation follows a curved path that can be optimized to remain visually distinct throughout.
+
+**Proposed v2 color pair criterion:**
+1. Maximum ΔE₀₀ (CIEDE2000) between anchor colors
+2. Monotonic hue path in LCH space (no ambiguous midpoints)
+3. Minimum ΔE₀₀ ≥ 20 at every intermediate gradient step (at 10% spacing)
+4. Robust to ±15% luminance shift (camera exposure variation)
+5. Robust to ±10° hue shift (camera white balance variation)
+
+This is a constrained optimization problem solvable with a finite search over the printable color gamut.
+
+### 15.4 Retinal persistence and virtual spinner behavior
+
+When a Digilog disc spins, the human eye integrates light over approximately 1/30 to 1/15 of a second (depending on ambient brightness). This temporal integration produces visual effects beyond simple motion blur:
+
+**Benham's top effect:** A spinning disc with alternating black and white arcs produces apparent colors due to differential cone response latency. The effect is frequency-dependent — different arc widths produce different apparent hue perceptions. This is not a camera artifact; it is a property of the human retina.
+
+**Implications for DSA:**
+1. The visual appearance of a spinning DSA disc to a human observer is NOT the same as what the camera reads. The camera performs temporal averaging; the eye performs temporal integration with frequency-dependent cone adaptation. A disc that looks correct to the camera may look incorrect to a human observer, and vice versa.
+2. A virtual spinner simulation (software animation of a spinning disc) should model retinal persistence to be accurate. Linear frame blending is not sufficient — the simulation should apply frequency-dependent latency weighting per color channel.
+3. The opponent color pairs identified in Section 15.2 may need additional constraint: the apparent color produced by retinal persistence of a spinning gradient should not interfere with the static (stopped) color pair legibility.
+
+**For v2 virtual spinner (dsa_animate.py extension):** model the disc appearance to a human observer by convolving consecutive frames with a retinal persistence impulse response:
+
+```
+h_red(t)    = A_red   × exp(−t / τ_red)    τ_red   ≈ 30ms
+h_green(t)  = A_green × exp(−t / τ_green)  τ_green ≈ 25ms
+h_blue(t)   = A_blue  × exp(−t / τ_blue)   τ_blue  ≈ 40ms
+```
+
+Different decay constants per channel model the known differential latency of L, M, and S cones. At 33rpm (6.6°/frame at 30fps), this produces the correct apparent color blending that a human would see — distinct from the camera integration model used in DSA v4.
+
+### 15.5 The disc as a visual score — perceptual design intent
+
+Section 12.3 of this document states: "The disc is a visual map of the music's energy. An audiophile looking at a Digilog disc under magnification can identify verse, chorus, drop, and silence by the density and sharpness of the gradient patterns."
+
+This intent requires that the disc be visually readable by humans, not just cameras. The current v1 color model is designed for camera readability. A v2 color model should satisfy both constraints simultaneously:
+
+- **Camera readability**: maximum ΔE in camera RGB space under reference illuminant
+- **Human readability**: maximum perceptual contrast in CIELAB under D65 illuminant, with retinal persistence behavior that reinforces rather than obscures the encoded information
+
+The strip visualization produced by dsa_strip.py is a useful diagnostic but not a perceptual simulation. A perceptually accurate strip would render each cell using the LCH-derived color that a human would perceive at the corresponding blend factor, under standard print viewing conditions.
+
+### 15.6 Practical near-term steps
+
+1. **Implement CIELAB color pair optimizer** — exhaustive search over printable gamut for maximum ΔE₀₀ pairs with monotonic LCH gradient paths. Output: a revised BAND_PAIRS table for dsa_disc.py.
+2. **Retinal persistence layer in dsa_animate.py** — per-channel exponential decay convolution across frames for human-accurate visual simulation.
+3. **Perceptual strip renderer** — dsa_strip.py mode that renders cells using LCH-interpolated colors rather than RGB linear blend.
+4. **Physical test**: print the v1 and v2 color pair discs on the same paper, read both with phone camera and Digilog Rig, compare α confidence values. Measurement trumps theory.
+
+---
+
+## 16. MIDI Interoperability — DSA as a Musical Data Language
+
+**Status:** Research direction — identified April 2026. No implementation timeline.
+
+---
+
+### 16.1 Structural analogy between DSA and MIDI
+
+The DSA (frame, band) spectral matrix is structurally analogous to a MIDI piano roll:
+
+```
+MIDI piano roll:    time × pitch   → velocity (0–127)
+DSA strip view:     frame × band   → steepness (0.0–1.0) + direction (±1/0)
+```
+
+Both formats represent musical energy as a 2D time-frequency matrix. The differences are:
+
+| Property | MIDI | DSA |
+|---|---|---|
+| Time resolution | ticks (tempo-relative) | 23.2ms frames (fixed) |
+| Frequency resolution | 128 discrete pitches (semitones) | 48 continuous bands |
+| Amplitude | 7-bit velocity (0–127) | float steepness (0.0–1.0) |
+| Sign | none (only note-on/off) | direction ±1 (coefficient sign) |
+| Physical medium | file / cable / network | printed disc |
+| Reversibility | playable in reverse by reversing sequence | native reverse playback via B-frame structure |
+
+The disc strip view (dsa_strip.py) already produces an image that visually resembles a MIDI piano roll. This is not coincidence — both formats are time-frequency energy representations. The analogy suggests a natural bidirectional bridge.
+
+### 16.2 MIDI → DSA path
+
+A MIDI file contains note events (pitch, velocity, duration, channel) and tempo information. Converting MIDI to a Digilog disc requires:
+
+1. **MIDI synthesis**: render MIDI to audio using a software synthesizer with a defined instrument library. This is standard — libraries like FluidSynth (GPL) or a built-in DSP synthesizer can render any MIDI file to a PCM audio stream.
+2. **DSA encoding**: encode the synthesized audio through the standard DSA pipeline (analyzer → quantizer → encoder → bitstream → disc layout).
+3. **Disc press**: render the disc layout to a printable image.
+
+Result: a MIDI composition encoded as a physical printed disc. The musical score becomes a physical object that plays itself when spun.
+
+**Instrument library design for DSA-native synthesis:**
+
+A DSA-native instrument library would be designed around the layer structure:
+- **L0 instruments** (bass, inner rings): 808 kick drum, bass synthesizer, sub-bass pads. Fundamental frequencies that survive under any disc condition.
+- **L1 instruments** (mid, middle rings): snare, melodic synths, pads, vocals. Core musical identity.
+- **L2 instruments** (high, outer rings): hi-hats, cymbals, air frequencies, reverb tails. Detail that enhances but is not essential.
+
+This maps directly to how DJs layer a track: bass is always present, mids carry the groove, highs are the texture. A disc encoded from a DSA-native MIDI render would degrade exactly like its musical role suggests — outer rings wear off first, the bass stays.
+
+### 16.3 DSA → MIDI path (reverse: disc to score)
+
+A spinning DSA disc produces a stream of spectral band values per frame. These can be mapped to MIDI note events:
+
+```
+band b with steepness s > threshold  →  note_on(pitch=band_to_pitch(b), velocity=s×127)
+band b with steepness s < threshold  →  note_off(pitch=band_to_pitch(b))
+direction = +1  →  standard note_on
+direction = −1  →  note_on with pitch bend or alternative timbre (scratched note)
+```
+
+This produces a MIDI stream from a physical disc read. A DJ scratching a Digilog disc would generate a live MIDI stream that could drive any synthesizer or DAW in real time.
+
+**Band to pitch mapping:** the 48 DSA bands span 20Hz–22kHz. Mapping to MIDI pitches (0–127, 8.18Hz–12,544Hz) requires a frequency-to-MIDI conversion:
+
+```
+pitch = round(69 + 12 × log2(f_center / 440))
+```
+
+where f_center is the center frequency of each band. L0 bands map to MIDI notes 24–36 (C1–C2), L1 to 36–72 (C2–C5), L2 to 72–108 (C5–C8).
+
+### 16.4 Backwards MIDI — physical-media native sequencer
+
+The MIDI → DSA → physical disc pathway enables a new use: a sequencer format designed from the start for physical media playback.
+
+Standard MIDI was designed for sequential electronic playback — it has no concept of random access, reverse playback, or variable speed. DSA has all three natively.
+
+A "Backwards MIDI" format would be a disc-native sequencer:
+- **Notes encoded as disc arc segments**: each note event is a set of arc segments across the relevant band rings. Note duration = arc angle. Note velocity = steepness. Chord = simultaneous arcs across multiple bands.
+- **Native reverse playback**: scratching backward plays the composition in reverse — notes in reverse order, but each note's waveshape also reverses (attack becomes release, decay becomes attack). This is musically meaningful in ways that software reverse MIDI is not.
+- **Variable speed = variable tempo**: slowing the disc slows the tempo naturally, with pitch coupled (vinyl feel). Pitch-independent time stretch would require the phase vocoder path.
+- **Physical score**: the disc IS the score. Every note is visible as a colored arc. A musician can read the disc directly and understand the composition without playing it.
+
+### 16.5 DSP synthesizer library for disc-native instruments
+
+For MIDI → DSA to produce musically useful output without requiring external audio files, DSA needs a built-in DSP synthesis library.
+
+Minimum viable instrument set for electronic music production:
+
+```
+808 kick drum   — exponentially decaying sine, pitch envelope, punch transient
+808 sub bass    — sustained sine with portamento
+Snare           — filtered noise burst + body sine
+Hi-hat (closed) — short bandpass noise burst
+Hi-hat (open)   — longer bandpass noise burst with decay
+Pad             — additive synthesis, slow attack, sustained
+Lead synth      — sawtooth with low-pass filter envelope
+```
+
+All of these are constructible from first-principles DSP: sine oscillators, noise generators, ADSR envelopes, and simple IIR filters. No samples required. A complete synthesis library would be approximately 500–800 lines of Python and would enable full MIDI rendering to DSA without external dependencies.
+
+**Physical implication:** an 808 kick drum encoded to a DSA disc will produce the characteristic black-dominated inner rings (all energy in L0 bands, near-zero L1/L2). A hi-hat will produce blue/green-dominated outer rings with near-zero inner rings. The disc's visual pattern will directly communicate the instrument arrangement — a kick on beat 1 appears as a burst of high-contrast black arcs in the inner rings at the corresponding frame arc.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*
