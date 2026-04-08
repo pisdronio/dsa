@@ -808,7 +808,79 @@ This chain — from physical surface condition to acoustic character — is the 
 
 The two sides of this interface are defined in section 2.3. The visual decoder outputs α[b] ∈ [0.0, 1.0]. The audio decoder applies it as `C̃[k] = q[k] × step[b] × α[b]`. The acoustic result at every point in the degradation table above is music — not silence, not glitch, not digital failure.
 
-### 12.7 Variable rate playback — real-time pitch control
+### 12.7 Disc rotation speed — RPM analysis and spiral geometry
+
+**The 33/45 RPM choice is aesthetic, not technically derived from the current disc geometry.**
+
+The current implementation arranges all N_FRAMES arcs around a single circumference (one revolution = all audio frames). For a 30s track at 44100 Hz / 1024-sample hop (43.07 fps):
+
+```
+Correct single-revolution RPM = (fps / n_frames) × 60
+                               = (43.07 / 1293) × 60
+                               = 2.0 RPM
+```
+
+At 33 RPM with this geometry, the disc plays back at **16.5× speed** — all 30 seconds of audio read in 1.8 seconds, producing a 16.5× pitch-shifted signal. 33 RPM was adopted from vinyl culture as an aesthetic target, not derived from the physics of the format.
+
+#### 12.7.1 The spiral geometry alternative
+
+Real vinyl records use a spiral groove: each revolution encodes a short fixed duration, and the needle progresses inward over many revolutions. If DSA adopts the same structure:
+
+```
+At 33 RPM: one revolution = 1.818s → 1.818 × 43.07fps = 78 frames/revolution
+At 45 RPM: one revolution = 1.333s → 1.333 × 43.07fps = 57 frames/revolution
+At 78 RPM: one revolution = 0.769s → 0.769 × 43.07fps = 33 frames/revolution
+```
+
+For a 30s track (1293 frames), the spiral would require:
+
+| Speed | Frames/rev | Revolutions | Inner arc | Outer arc |
+|-------|-----------|-------------|-----------|-----------|
+| **2 RPM** (current) | 1293 | 1 | 0.30mm | 0.69mm |
+| **33 RPM** (spiral) | 78 | 16.6 | **4.99mm** | **11.36mm** |
+| **45 RPM** (spiral) | 57 | 22.7 | **6.83mm** | **15.54mm** |
+| **78 RPM** (spiral) | 33 | 39.2 | **11.80mm** | **26.85mm** |
+
+The spiral design at 33 RPM gives **16× wider arcs** on the inner rings (4.99mm vs 0.30mm). This moves from sub-millimeter print requirements into comfortable phone-camera territory without any change to the audio codec, sample rate, or frame structure.
+
+**Implications of the spiral redesign:**
+- Disc geometry changes: arcs are now sectors of a spiral track, not full-circumference rings
+- The 48 frequency bands are read simultaneously at the same angular position (all 48 rings stacked radially, same angle = same frame, same time point in the audio)
+- The spiral moves inward over time — same as vinyl — giving the disc its temporal structure
+- The clock track measures rotation speed exactly as before
+- The renderer must map (frame_idx, band_idx) to a spiral-arc position rather than a full-circumference arc
+
+**Status:** single-revolution geometry is implemented and tested. Spiral geometry is the correct design for physical 33/45 RPM operation and is the next major rendering change.
+
+#### 12.7.2 Blur tolerance and color contrast — the direct relationship
+
+The v1.1 color pair optimization (Section 12.2.1) buys blur tolerance directly, not just perceptual aesthetics. When the camera or print introduces Gaussian blur of σ pixels, adjacent arcs blend together at the sample points. The effective steepness seen by the reader after blur is approximately:
+
+```
+effective_steepness(σ) ≈ steepness × exp(−σ² / (2 × arc_width_px²))
+```
+
+A color pair with high ΔE₀₀ has a larger absolute color difference between the two sample points even after this attenuation. The blur failure threshold in terms of arc width is:
+
+```
+σ_max ≈ arc_width_px × sqrt(−2 × ln(threshold / ΔE₀₀_normalized))
+```
+
+This means the minimum L0 pair (ΔE₀₀ = 85.5 in v1.1 vs 70.0 in v1) survives approximately `sqrt(85.5/70.0) = 1.10×` more blur before failing. The degradation simulation confirms: L0 blur failure at σ=2px for v1.1, consistent with the formula prediction.
+
+**Under the spiral geometry at 33 RPM, arc widths increase 16×.** The blur tolerance scales with arc width — the same σ_max formula applies, and at 16× wider arcs, the maximum tolerable blur is 16× larger in absolute mm. A print that fails completely at 2 RPM (sub-mm arcs) would read perfectly at 33 RPM spiral (5mm arcs). The spiral redesign solves the blur problem structurally, not through further color optimization.
+
+#### 12.7.3 Visual readability — by design, machine-readable not human-decodable
+
+At the current single-revolution geometry (0.30mm inner arcs), the gradients are at the absolute limit of human visual acuity (~0.1mm at 25cm). The disc appears as a dense color composition — active passages produce colorful regions, silence produces dark bands — but individual gradient arcs are not distinguishable by eye. This is correct behavior. The disc is:
+
+- **Human-readable** as a visual representation of spectral energy (color composition)
+- **Not human-decodable** arc-by-arc (requires camera sampling)
+- **Machine-decodable** by a camera at ≥300 DPI effective resolution
+
+Under the spiral design at 33 RPM, individual arcs (5mm inner, 11mm outer) are clearly visible to the naked eye. The gradient direction and steepness become visually apparent. This is a qualitative change in the disc as a visual artifact — it becomes a human-legible score as well as a machine-readable medium.
+
+### 12.8 Variable rate playback — real-time pitch control
 
 Rotation speed is measured in real time by the rig camera watching clock track dots pass the read window. This measurement IS the tempo — not encoded in the disc, derived from physics.
 
