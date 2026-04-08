@@ -114,14 +114,20 @@ Band spacing follows human auditory perception:
 ## Status
 
 ```
-Step 1  ✓  MDCT Frame Analyzer      — complete, verified
-Step 2  ✓  Perceptual Quantizer     — complete, verified
-Step 3  ✓  K-frame encoder          — complete, verified
-Step 4  ✓  B-frame encoder          — complete, verified
-Step 5  ○  Huffman entropy coder    — pending
-Step 6  ○  Layered bitstream packer — pending
-Step 7  ○  DSA decoder              — pending
-Step 8  ○  Integration with Digilog disc encoder — pending
+Step 1  ✓  MDCT Frame Analyzer           — complete, verified
+Step 2  ✓  Perceptual Quantizer          — complete, verified
+Step 3  ✓  K-frame encoder               — complete, verified
+Step 4  ✓  B-frame encoder               — complete, verified
+Step 5  ✓  Huffman entropy coder         — complete, verified
+Step 6  ✓  Layered bitstream packer      — complete, verified
+Step 7  ✓  DSA decoder                   — complete, verified
+Step 8  ✓  Digilog disc encoder interface — complete, verified
+
+Tools  ✓  Unified CLI (dsa_cli.py)        — encode / decode / disc / bench / info
+       ✓  Mode 2 gradient encoding        — continuous per-band steepness
+       ✓  Variable-speed decoder          — 0.25×–4× with pitch coupling
+       ✓  Benchmark suite (dsa_bench.py)  — DSA vs Opus at 6–96 kbps
+       ✓  Test suite (74 tests)           — unit + integration, all pass
 ```
 
 ---
@@ -137,9 +143,15 @@ dsa/
 ├── dsa_analyzer.py      — Step 1: MDCT frame analyzer ✓
 ├── dsa_quantizer.py     — Step 2: perceptual quantizer ✓
 ├── dsa_encoder.py       — Steps 3–4: K/B-frame encoders ✓
-├── dsa_decoder.py       — Step 7: decoder
+├── dsa_huffman.py       — Step 5: Huffman entropy coder ✓
+├── dsa_bitstream.py     — Step 6: layered bitstream packer ✓
+├── dsa_decoder.py       — Step 7: decoder (+ variable-speed) ✓
+├── dsa_disc.py          — Step 8: Digilog disc encoder interface ✓
+├── dsa_cli.py           — unified CLI: encode / decode / disc / bench / info ✓
+├── dsa_bench.py         — benchmark suite: DSA vs Opus ✓
 └── tests/
-    └── test_analyzer.py
+    ├── test_analyzer.py   — Step 1 unit tests (MDCT, bands, analyzer) ✓
+    └── test_pipeline.py   — integration tests, full pipeline Steps 1–8 ✓
 ```
 
 ---
@@ -154,11 +166,32 @@ pip install numpy scipy  # core dependencies
 apt install ffmpeg       # audio loading
 ```
 
-### Run the analyzer
+### Unified CLI
 
 ```bash
 git clone https://github.com/pisdronio/dsa
 cd dsa
+
+python3 dsa_cli.py encode  song.mp3               # encode at 12 kbps
+python3 dsa_cli.py encode  song.mp3 -b 32         # 32 kbps
+python3 dsa_cli.py encode  song.mp3 --mode 2      # gradient Mode 2
+
+python3 dsa_cli.py decode  song.dsa               # decode to song.wav
+python3 dsa_cli.py decode  song.dsa --reverse     # reverse playback
+python3 dsa_cli.py decode  song.dsa --layers 0    # bass-only (L0)
+python3 dsa_cli.py decode  song.dsa --speed 0.5   # half speed (lower pitch)
+python3 dsa_cli.py decode  song.dsa --alpha 0.3   # worn-disc simulation
+
+python3 dsa_cli.py disc    song.mp3               # disc layout JSON
+python3 dsa_cli.py disc    song.mp3 -b 96 --mode 2  # high-res gradient layout
+
+python3 dsa_cli.py info    song.dsa               # file metadata
+python3 dsa_cli.py bench   --quick                # benchmark vs Opus
+```
+
+### Run the analyzer
+
+```bash
 python3 dsa_analyzer.py your_song.mp3
 ```
 

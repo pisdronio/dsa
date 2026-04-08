@@ -822,6 +822,46 @@ Recommended libraries:
 
 ---
 
+## 10. Open Problems and Future Work
+
+### 10.1 Radial motion blur compensation
+
+At a given RPM, tangential velocity increases with radius:
+v = 2π × r × RPM/60
+
+This means outer rings (L2, high frequency) experience greater
+motion blur than inner rings (L0, bass) at the same rotation speed.
+
+Current model treats confidence α as uniform per band at a given
+speed. A more accurate model would compute per-layer confidence
+degradation as a function of radius and RPM:
+
+  α_L0(speed) > α_L1(speed) > α_L2(speed)
+
+with the gap widening as speed increases.
+
+This has implications for scratch performance: at high scratch
+speeds, L2 degrades first and fastest — which is actually
+perceptually correct (highs roll off before mids before bass)
+but should be explicitly modeled rather than incidentally correct.
+
+### 10.2 Optical pipeline simulation for encoder optimization
+
+Current pre-emphasis (Section 12.4) uses a static factor (1.15×)
+estimated for the reference rig. A simulation-based optimizer
+would model the full optical pipeline:
+- Gaussian blur (lens PSF at fixed focal length)
+- Tangential motion blur (radius and RPM dependent, see 10.1)
+- Downsampling (camera sensor resolution)
+- Noise (sensor noise floor)
+
+Then optimize gradient steepness and color pair assignments to
+maximize decoded confidence after simulated degradation. This
+would replace the static pre-emphasis estimate with a
+calibrated, testable model.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*
