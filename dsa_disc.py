@@ -64,6 +64,31 @@ PALETTE = {
     'purple': (160, 50,  200),
 }
 
+# ─── Disc capacity limits ────────────────────────────────────────────────────
+#
+# The binding constraint is the INNERMOST ring (L0, band 0) at radius 62mm.
+# Its circumference (389mm) is less than half the outer ring (886mm), so it
+# sets the maximum number of frames before arc width becomes unreadable.
+#
+# Minimum readable arc per reader type → maximum track duration:
+#
+#   DISC_STANDARD  — Digilog Rig (0.3mm min arc)     — 30s / 1298 frames
+#   DISC_PHONE     — Phone camera (0.5mm min arc)     — 18s /  779 frames
+#
+# Encoders SHOULD warn if the input audio exceeds these limits.
+# The DSA bitstream itself has no hard limit — these are physical constraints
+# of the 290mm (12-inch) disc format at 44100Hz sample rate.
+
+DISC_INNER_RADIUS_MM  = 62.0    # innermost audio ring radius (L0 band 0)
+DISC_MIN_ARC_RIG_MM   = 0.3     # minimum readable arc, Digilog Rig
+DISC_MIN_ARC_PHONE_MM = 0.5     # minimum readable arc, phone camera
+
+import math as _math
+DISC_MAX_FRAMES_STANDARD = int(2 * _math.pi * DISC_INNER_RADIUS_MM / DISC_MIN_ARC_RIG_MM)    # 1298
+DISC_MAX_FRAMES_PHONE    = int(2 * _math.pi * DISC_INNER_RADIUS_MM / DISC_MIN_ARC_PHONE_MM)  # 779
+DISC_MAX_DURATION_STANDARD_S = DISC_MAX_FRAMES_STANDARD * (1024 / 44100)  # ~30.1s
+DISC_MAX_DURATION_PHONE_S    = DISC_MAX_FRAMES_PHONE    * (1024 / 44100)  # ~18.1s
+
 # ─── Color pair assignment ────────────────────────────────────────────────────
 #
 # Each band on the disc uses one fixed color pair.
@@ -444,9 +469,31 @@ class DSADiscEncoder:
             frames, _, _ = analyzer.analyze_file(in_path)
             dsa_bytes = writer.encode_frames(frames)
 
-        reader = DSABitstreamReader(dsa_bytes)
-        layout = self.encode(reader, layers=layers)
+        reader     = DSABitstreamReader(dsa_bytes)
+        n_frames   = reader.header.n_frames
+        duration_s = n_frames * (1024 / 44100)
 
+        if n_frames > DISC_MAX_FRAMES_STANDARD:
+            import sys
+            print(
+                f"  WARNING: {n_frames} frames ({duration_s:.1f}s) exceeds "
+                f"DISC_STANDARD limit ({DISC_MAX_FRAMES_STANDARD} frames, "
+                f"{DISC_MAX_DURATION_STANDARD_S:.0f}s). "
+                f"Inner ring arc width will be below 0.3mm — "
+                f"requires Digilog Rig with high-res print.",
+                file=sys.stderr,
+            )
+        elif n_frames > DISC_MAX_FRAMES_PHONE:
+            import sys
+            print(
+                f"  NOTE: {n_frames} frames ({duration_s:.1f}s) exceeds "
+                f"DISC_PHONE limit ({DISC_MAX_FRAMES_PHONE} frames, "
+                f"{DISC_MAX_DURATION_PHONE_S:.0f}s). "
+                f"Not phone-readable — requires Digilog Rig.",
+                file=sys.stderr,
+            )
+
+        layout = self.encode(reader, layers=layers)
         Path(out_path).write_text(layout.to_json(indent=2, per_coeff=per_coeff))
         return layout
 
