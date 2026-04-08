@@ -850,7 +850,7 @@ The spiral design at 33 RPM gives **16× wider arcs** on the inner rings (4.99mm
 - The clock track measures rotation speed exactly as before
 - The renderer must map (frame_idx, band_idx) to a spiral-arc position rather than a full-circumference arc
 
-**Status:** single-revolution geometry is implemented and tested. Spiral geometry is the correct design for physical 33/45 RPM operation and is the next major rendering change.
+**Status:** Both single-revolution and spiral geometry are implemented (`dsa_render.py --spiral --rpm N`). Spiral is correct for physical 33/45 RPM vinyl-format operation. The capacity ceiling analysis is in §12.7.4.
 
 #### 12.7.2 Blur tolerance and color contrast — the direct relationship
 
@@ -870,7 +870,68 @@ This means the minimum L0 pair (ΔE₀₀ = 85.5 in v1.1 vs 70.0 in v1) survives
 
 **Under the spiral geometry at 33 RPM, arc widths increase 16×.** The blur tolerance scales with arc width — the same σ_max formula applies, and at 16× wider arcs, the maximum tolerable blur is 16× larger in absolute mm. A print that fails completely at 2 RPM (sub-mm arcs) would read perfectly at 33 RPM spiral (5mm arcs). The spiral redesign solves the blur problem structurally, not through further color optimization.
 
-#### 12.7.3 Visual readability — by design, machine-readable not human-decodable
+#### 12.7.3 Spiral was always correct — single-revolution was never physical
+
+The single-revolution geometry was an analysis artifact, not a design choice. DSA was conceived as a vinyl format from the start. Vinyl records have always used spiral grooves. The single-revolution rendering was a simulation convenience — it made the math simpler to reason about and was easier to verify in software — but it was never valid for physical 33/45 RPM playback.
+
+At 33 RPM, a single-revolution disc plays all its audio in one rotation (1.818 seconds). A 30-second track on a single-revolution disc requires 0.06 RPM — approximately one rotation per 17 minutes. That is not a turntable; it is a clock. The spiral redesign is not an improvement to single-revolution — it is the correct implementation of the original concept.
+
+**What the spiral geometry changes:**
+
+| Property | Single-rev (2 RPM) | Spiral 33 RPM | Spiral 45 RPM |
+|---|---|---|---|
+| Arc width inner | 0.30mm | 4.99mm | 6.83mm |
+| Arc width outer | 0.69mm | 11.36mm | 15.54mm |
+| Physical RPM | 2 (not a turntable) | 33 (standard LP) | 45 (standard single) |
+| Human-legible arcs | No | Yes | Yes |
+| Phone camera viable | No (blur) | Yes | Yes |
+| Codec, bitrate, SNR | unchanged | unchanged | unchanged |
+
+The codec — MDCT, perceptual quantization, K/B-frames, bitstream — is RPM-independent. The audio quality at 12 kbps is identical at 2, 33, or 45 RPM. What changes is the physical geometry of the disc surface, not the data encoded in it.
+
+#### 12.7.4 Spiral capacity ceiling — duration vs DPI vs arc width
+
+The spiral geometry creates a direct trade-off between audio duration and sub-band width. Longer audio = more revolutions per band = narrower sub-bands. The ceiling is set by the minimum readable sub-band width for the camera in use.
+
+**Disc geometry (290mm standard):**
+- Audio zone: outer radius 141mm → inner radius 62mm
+- Ring width per band: (141 − 62) / 48 = **1.646mm** per frequency band
+
+**Revolutions at 33 RPM as a function of duration:**
+
+| Duration | Frames | Revolutions | Sub-band | @ 300 DPI | Phone readable? |
+|---|---|---|---|---|---|
+| 10s | 431 | 5.5 | 0.299mm | 3.5px | ✓ marginal |
+| 30s | 1293 | 16.6 | 0.099mm | 1.2px | ✗ |
+| 2 min | 5168 | 66.3 | 0.025mm | 0.3px | ✗ |
+| 20 min (LP) | 51,684 | 663 | 0.0025mm | 0.03px | ✗ |
+
+At 600 DPI (high-quality laser print):
+
+| Duration | Sub-band | @ 600 DPI | Phone readable? |
+|---|---|---|---|
+| 10s | 0.299mm | 7.1px | ✓ |
+| 30s | 0.099mm | 2.4px | ✗ (marginal rig) |
+| ~12s | 0.200mm | 4.7px | ✓ |
+
+**Practical capacity at 33 RPM:**
+- Phone camera (≥0.5mm sub-band): **~3 seconds** at 300 DPI, **~6 seconds** at 600 DPI
+- Rig camera (≥0.1mm sub-band): **~16 seconds** at 300 DPI, **~30 seconds** at 600 DPI
+- Flatbed scanner (≥0.05mm sub-band): **~30 seconds** at 300 DPI, **~60 seconds** at 600 DPI
+
+DSA is not an LP. It is a short-duration medium — suitable for DJ loops, samples, sonic signatures, short compositions. This is not a limitation to overcome; it is a format definition.
+
+**Why vinyl achieves 20 minutes at 33 RPM:** Vinyl groove pitch is ~0.3mm, cut by a mechanical stylus with micron precision. The groove is read by a needle in contact with the medium — no optical resolution limit. DSA is optically read, so its groove pitch is bounded by the camera/printer resolution chain. Bridging this gap requires either printing at 1200+ DPI (professional inkjet/laser) or accepting shorter duration.
+
+**Increasing capacity without DPI change:**
+1. Reduce band count — 24 bands instead of 48 doubles sub-band width → doubles duration at same DPI
+2. Increase disc diameter — a 12" LP disc at 141mm outer would need the audio zone extended, but the 290mm outer limit (dsa_disc.py) already matches LP diameter
+3. Slower RPM — 8 RPM instead of 33 RPM: 4× fewer revolutions per duration → 4× wider sub-bands → same 30s audio with 4× more margin, but requires a specialized slow-speed motor (not a standard turntable)
+4. Multi-pass encoding (future) — encode different frequency layers at different radii, read at different revolutions — interleaves multiple shorter tracks in the same groove zone
+
+The currently tested operating point (8 RPM, 30s, 300 DPI) uses spiral geometry correctly: 98.38% direction accuracy, 4.86px sub-band. **The 8 RPM test is the validated physical operating point.** 33 RPM with standard turntables requires either shorter audio (<12s) or higher DPI (≥600).
+
+#### 12.7.5 Visual readability — by design, machine-readable not human-decodable
 
 At the current single-revolution geometry (0.30mm inner arcs), the gradients are at the absolute limit of human visual acuity (~0.1mm at 25cm). The disc appears as a dense color composition — active passages produce colorful regions, silence produces dark bands — but individual gradient arcs are not distinguishable by eye. This is correct behavior. The disc is:
 
@@ -2241,6 +2302,96 @@ Once Tier 1 is available, the following test matrix characterizes the physical r
 | Laptop webcam | 300mm | monitor ambient | — | cheapest reader test |
 
 Each combination produces a direction accuracy / mean α result that populates the lookup table in Section 13.4. This directly calibrates the pre-emphasis model and the α weighting in the audio decoder.
+
+### 17.7 Exact test sequence — software to physical
+
+Three tiers. Each tier validates the previous one. No hardware is required until Tier 2.
+
+#### Tier 0 — Software baseline (no printing, no camera)
+
+Use the rendered strip PNG directly as the "photo". It is already in canonical space so the homography is identity and accuracy should be ≥98%. This proves the pipeline is wired correctly and that `dsa_camera.py` reads back what `dsa_strip.py` wrote.
+
+```bash
+# Generate synthetic 3-tone test signal (10 seconds, spans L0/L1/L2)
+python3 -c "
+import numpy as np, scipy.io.wavfile as wav
+t = np.linspace(0, 10, 441000)
+sig = (0.5*np.sin(2*np.pi*440*t)
+     + 0.3*np.sin(2*np.pi*2000*t)
+     + 0.2*np.sin(2*np.pi*9000*t))
+wav.write('test.wav', 44100, (sig*32767).astype(np.int16))
+"
+
+# Encode → disc layout
+python3 dsa_cli.py disc test.wav -b 12
+
+# Render strip with fiducials at 300 DPI
+python3 dsa_strip.py test.disc.json --fiducials --strip-dpi 300 --out test.fiducials.strip.png
+
+# Run camera reader on the rendered PNG (perfect baseline — no optics)
+python3 dsa_camera.py test.fiducials.strip.png test.disc.json \
+  --save-warped test.warped.png \
+  --out-overlay test.overlay.png \
+  --conf-map test.confmap.png \
+  --debug-detect
+```
+
+**Expected result:** direction accuracy ≥98%, mean α ≥0.93, grade EXCELLENT. Any lower indicates a bug in the camera reader geometry or colour projection.
+
+Also validate the live pipeline:
+
+```bash
+# Encode to bitstream
+python3 dsa_cli.py encode test.wav -o test.dsa
+
+# Live scan: strip PNG → decoded WAV via single-column sampler
+python3 dsa_live.py scan test.fiducials.strip.png test.disc.json test.dsa --out test.live.wav
+
+# Straight decode for comparison
+python3 dsa_cli.py decode test.dsa -o test.straight.wav
+
+# test.live.wav and test.straight.wav should be perceptually identical.
+# Any audible difference indicates a bug in DSAStreamDecoder or StripColumnSampler.
+```
+
+#### Tier 1 — Screen photograph (tests optics, no printing)
+
+Display `test.fiducials.strip.png` fullscreen on any monitor. Photograph it with a phone held directly above the screen. The screen adds: JPEG compression, backlight variation, possible moire with monitor pixel grid.
+
+```bash
+python3 dsa_camera.py IMG_xxxx.jpg test.disc.json \
+  --save-warped screen_warped.png \
+  --out-overlay screen_overlay.png \
+  --debug-detect
+```
+
+**Expected result:** direction accuracy 85–95%, mean α 0.80–0.92, grade GOOD. L2 (high frequency) bands will degrade first — they have the highest spatial frequency content and are most sensitive to JPEG compression.
+
+If auto-detect fails: run with `--debug-detect` to see what contours were found, then use `--corner-frac 0.04` (corners are smaller relative to a monitor-filled image) or supply `--corners` manually.
+
+#### Tier 2 — Physical print
+
+Print `test.fiducials.strip.png` at exactly 300 DPI (no scaling — match pixel dimensions to physical dimensions). Use plain matte paper. Photograph flat on a light-coloured desk, even ambient lighting, phone directly above at ~150mm.
+
+```bash
+python3 dsa_camera.py photo.jpg test.disc.json \
+  --strip-dpi 300 \
+  --save-warped print_warped.png \
+  --out-overlay print_overlay.png \
+  --conf-map print_confmap.png \
+  --decode test.dsa \
+  --out recovered.wav
+```
+
+**Expected result:** direction accuracy 75–93%, mean α 0.70–0.90. Inspect the confidence overlay: green bands = survived the print/photo trip, red = lost. The pattern of which bands fail first is the empirical calibration data for the pre-emphasis curve (§13.12) and the α weighting table (§13.4).
+
+**What to record from the physical test:**
+- Which frequency layer (L0/L1/L2) fails first at 300 DPI
+- What the baseline mean α is for each layer under ambient phone lighting
+- Whether the scale bar measurement matches nominal DPI (confirms no printer scaling)
+- The contents of `--out-json` as the baseline calibration record
+
+This is the data that all subsequent encoding decisions (color pair selection, DPI target, pre-emphasis) must be validated against.
 
 ---
 
