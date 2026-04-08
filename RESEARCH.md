@@ -625,6 +625,14 @@ This section records key design decisions and the reasoning behind them.
 
 13. Perceptual Audio Coder error concealment survey — ITU-T G.191 Software Tools Library, reference implementation of frame loss concealment strategies.
 
+14. Campbell, F.W., Robson, J.G. (1968). "Application of Fourier analysis to the visibility of gratings." *Journal of Physiology*, 197(3), 551–566. — Original measurement of the human Contrast Sensitivity Function (CSF); the visual perceptual weighting function proposed for DVA (Section 10.3) is derived from these measurements.
+
+15. Duda, J. (2013). "Asymmetric numeral systems: entropy coding combining speed of Huffman coding with compression rate of arithmetic coding." *arXiv:1311.2540*. — Theoretical foundation for ANS entropy coding; the patent-free alternative to Huffman proposed in Section 10.5.
+
+16. Alliance for Open Media (2018). "AV1 Bitstream & Decoding Process Specification." https://aomedia.org/av1/ — AV1 uses ANS (specifically rANS) as its entropy coder; confirms patent-free status and provides a production reference implementation.
+
+17. MPEG-4 Scalable Video Coding (SVC). ISO/IEC 14496-10:2008 Annex G. — Normative specification of the MPEG-4 AVC scalable extension; the layered spatial/temporal/quality scalability model is the closest existing video analogue to DSA's layered audio architecture.
+
 ---
 
 ## 9. Acknowledgments
@@ -883,6 +891,63 @@ Then optimize gradient steepness and color pair assignments to
 maximize decoded confidence after simulated degradation. This
 would replace the static pre-emphasis estimate with a
 calibrated, testable model.
+
+### 10.3 DVA: Digilog Visual Architecture
+
+DVA is a research direction for a video codec derived from DSA using the same layered physical-media principles.
+
+**Core idea:** Replace the 1D MDCT (time → frequency) with a 3D spatial-temporal transform operating on video frame blocks. The three DSA audio layers become spatial resolution layers — inner disc rings carry coarse spatial information, outer rings carry fine detail — with temporal prediction between frames following the K/B-frame model.
+
+**Masking model substitution:** The ATH (Absolute Threshold of Hearing) and Bark-scale masking that drive perceptual quantization in DSA audio have a direct visual analogue. The human Contrast Sensitivity Function (CSF, Campbell & Robson 1968 [14]) describes spatial frequency sensitivity: peak sensitivity near 3–5 cycles/degree, roll-off at low and high spatial frequencies. DVA would replace ATH with CSF as the perceptual weighting function, and replace Bark bands with spatial frequency bands.
+
+**Analog degradation:** The DSA analog degradation model (partial α weighting producing vinyl-like rolloff) maps to visual degradation: partial layer reads produce lower spatial resolution, not blocking artifacts. A blurred frame is perceptually preferable to a corrupted one.
+
+**Status:** Conceptual. Requires: (a) definition of the 3D transform, (b) CSF-based perceptual quantizer, (c) visual analogue of the DSA1 bitstream format. No implementation timeline.
+
+### 10.4 Per-layer adaptive Huffman tables
+
+DSA currently uses a single shared Huffman table for all quantized coefficients. Each layer (L0, L1, L2) has systematically different coefficient distributions:
+
+- L0 (bass, 8 bands): high-energy, low-variance coefficients — distribution peaked near ±4–8
+- L1 (mid, 16 bands): medium energy, wider spread — distribution peaked near ±2–6
+- L2 (high, 24 bands): low energy, sparse — distribution peaked near ±0–2 with heavy tail
+
+A per-layer Huffman table trained on representative audio would reduce average code length by 8–15% per layer relative to a shared table. For the current 12 kbps target, this would recover approximately 1.0–1.8 kbps — meaningful at low bitrates.
+
+**Implementation path:** Collect coefficient histograms per layer during the quantizer stage. Train three separate Huffman codebooks. Store codebook index in the DSA1 frame header (2 bits, already reserved). Decoder selects codebook per layer from frame header.
+
+**Interaction with Mode 2:** Mode 2 continuous steepness values are currently stored as 32-bit floats. Per-layer adaptive Huffman applies only to the quantized integer coefficients, not the steepness floats. The two features are independent.
+
+### 10.5 ANS entropy coding
+
+The current Huffman coder (dsa_huffman.py) achieves near-optimal compression for fixed symbol probabilities but cannot adapt within a frame. Asymmetric Numeral Systems (ANS, Duda 2013 [15]) is a modern entropy coding technique used in Zstandard, AV1, and LZFSE.
+
+**Advantages over Huffman for DSA:**
+- ANS achieves within 0.001 bits/symbol of theoretical entropy (Shannon limit), versus Huffman's worst-case 1 bit/symbol excess for low-probability symbols
+- ANS supports fractional bit-per-symbol coding — no rounding to integer bit boundaries
+- ANS is streaming: state carries across symbols within a frame, allowing the coder to adapt to changing coefficient distributions mid-frame
+- ANS is patent-free (Huffman variants are encumbered in some jurisdictions)
+
+**Estimated gain:** 10–15% closer to theoretical minimum than Huffman on typical audio coefficient distributions, consistent with published benchmarks on similar data.
+
+**Implementation complexity:** Higher than Huffman — requires tANS (table ANS) construction, encoder/decoder state machine, and careful integration with the layered bitstream. Recommended as a Phase 2 entropy coder after the reference implementation is stable.
+
+### 10.6 Strobe-synchronized reading
+
+The DSA disc currently encodes audio in a single visual channel read by a camera under ambient or continuous illumination. A strobe-synchronized reading system would enable two independent information channels from the same physical surface.
+
+**Architecture:**
+- **Channel 1 (visible strobe):** Standard DSA colored dot layer, read under a visible-light strobe synchronized to disc rotation. The strobe freezes motion, eliminating blur. This gives higher fidelity reads at lower RPM than the current continuous-light model.
+- **Channel 2 (UV strobe):** A second dot layer printed in UV-fluorescent ink, invisible under visible light, read by the same camera under UV strobe at a different phase. This layer is physically beneath or adjacent to the visible layer and carries independent data.
+
+**Use cases:**
+- **Error correction:** Channel 2 carries parity or redundancy data for Channel 1. Damaged visible dots can be reconstructed from UV parity.
+- **Metadata layer:** Channel 2 carries track metadata, DRM-free watermarking, or extended disc information without consuming audio bitrate.
+- **Dual audio:** Channel 1 = DSA audio layer (L0–L2). Channel 2 = independent second audio stream (e.g., stems, commentary, alternate mix).
+
+**Hardware requirement:** Synchronized strobe controller (visible + UV) triggered from a reference mark on the disc. Camera frame rate must be a multiple of the strobe frequency. Total system cost increase estimated at 40–80 USD for the strobe controller.
+
+**Status:** Conceptual. Compatible with the current DSA bitstream format — Channel 2 data would be a separate DSA1 bitstream written to the UV layer. No disc-level specification for the UV layer exists yet.
 
 ---
 
@@ -1496,6 +1561,57 @@ The Digilog v4 calibration disc applies exactly this framework to a rotational o
 ---
 
 *Section 13 added April 2026 following theoretical development of DSA v4: Physics-Integrated Optical Encoding. The calibration disc and experimental protocol described here are the necessary first step before any v4 encoding specification can be written. The specification will be derived from measurement, not theory.*
+
+---
+
+## 14. Derived Format Research Directions
+
+This section records research directions that extend beyond DSA audio into adjacent format spaces using the same physical-media and layered-encoding principles. These are not planned features of DSA v1. They are design-space explorations that share DSA's core architecture.
+
+---
+
+### 14.1 Hybrid disc architecture
+
+**Concept:** A single Digilog disc that carries two independent formats on the same physical surface — one for static reading (disc at rest, camera macro scan) and one for dynamic reading (disc spinning at 33rpm on a turntable).
+
+**Static layer:** Standard QR-code-adjacent encoding — high-density dot patterns readable by a flatbed scanner or macro camera lens at rest. This layer uses conventional 2D barcode error correction (Reed-Solomon) and is not time-dependent. Suitable for: album metadata, lyrics, credits, download links, cryptographic signatures.
+
+**Dynamic layer:** DSA audio encoding — the colored dot rings that require rotation to decode. The dynamic layer uses the motion-blur integration mechanism and is unreadable at rest (the individual dots are visible but carry no decodable audio information without temporal integration).
+
+**Physical co-existence:** The two layers occupy different spatial regions of the disc surface. The static layer uses fine black dots in the outermost and innermost regions (which have low area-per-band-unit and are less critical for audio quality). The dynamic layer uses colored dot rings in the audio encoding region. A camera scanning the disc at rest reads static data. The same camera at 33rpm reads audio.
+
+**Research question:** What is the minimum physical separation between layers required to prevent cross-read interference? Can a single optical pass at rest distinguish static black dots from dynamic color dots with sufficient reliability?
+
+### 14.2 Video extension path
+
+**Concept:** DVA — Digilog Visual Architecture — a video codec using DSA's layered physical-media framework extended to spatial-temporal video data. Full conceptual description in Section 10.3.
+
+**Format extension:** A DVA disc would use concentric ring zones for spatial frequency layers, analogous to DSA audio layers:
+- Inner rings: coarse spatial structure (DC + low spatial frequency) — always readable
+- Middle rings: medium spatial detail — readable on average camera
+- Outer rings: fine spatial detail and texture — readable with controlled rig
+
+**Frame rate coupling:** Disc rotation speed determines temporal resolution, analogous to how DSA rotation speed determines temporal playback rate. Slower rotation = lower frame rate but higher spatial fidelity per frame (longer exposure integration time). This is the inverse of the DSA audio relationship (slower rotation = slower playback) — in DVA, slower rotation trades temporal for spatial resolution.
+
+**Compression kernel:** The 3D spatial-temporal transform with CSF-based perceptual quantization described in Section 10.3. The DSA1 bitstream format would be extended with a DVA1 variant carrying 2D coefficient blocks per frame instead of 1D spectral coefficients.
+
+**Status:** No implementation planned until DSA audio v1 is externally validated. DVA is a 3–5 year research horizon.
+
+### 14.3 Better-than-Opus compression
+
+**Concept:** DSA's current benchmark position (Section 11) shows that DSA beats Opus at 6–12 kbps on tonal signals and at 96 kbps after the bidirectional scaler fix. The 32 kbps tonal gap (Opus leads by 5–17 dB) and the broadband gap (Opus leads on chirp and white noise at all bitrates) indicate that DSA's quantizer is leaving efficiency on the table.
+
+**Path to closing the gap:**
+
+**(a) Psychoacoustic model refinement:** The current ATH + Bark masking model (Section 3) uses simplified ISO 226 equal-loudness contours with fixed frequency weights. A full implementation would incorporate simultaneous masking (tonal masker suppresses nearby noise), temporal masking (pre- and post-masking windows), and inter-channel masking for stereo. These are standard in AAC and Opus and account for approximately 3–6 dB improvement at mid bitrates.
+
+**(b) ANS entropy coding (Section 10.5):** 10–15% compression improvement across all bitrates without changing the quantizer. At 32 kbps this recovers 3.2–4.8 kbps, which at current SNR curves corresponds to approximately 2–4 dB.
+
+**(c) Per-layer adaptive Huffman (Section 10.4) as an intermediate step:** 8–15% improvement at low implementation cost, recoverable within the current Huffman architecture.
+
+**(d) Joint stereo encoding:** DSA currently encodes channels independently. Mid/Side (M/S) stereo encoding, standard since MP3, reduces inter-channel redundancy. For stereo signals, M/S typically saves 20–35% of the bitrate allocated to the Side channel, which can be redirected to the Mid channel for improved center-image fidelity.
+
+**Target:** With (a) + (b) + (d) implemented, DSA should exceed Opus at 32 kbps on tonal signals and match Opus on broadband signals. Exceeding Opus on broadband at all bitrates would require a fundamental change to the transform (longer window, higher frequency resolution) and is not a target for v1.
 
 ---
 
