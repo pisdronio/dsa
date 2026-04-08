@@ -1843,6 +1843,115 @@ All of these are constructible from first-principles DSP: sine oscillators, nois
 
 ---
 
+## 17. Physical Test Methodology — Strip Experiments and Camera Reader
+
+**Status:** Active development — April 2026. Strip camera reader planned; web app deferred.
+
+---
+
+### 17.1 Why the strip format for first physical tests
+
+The disc read geometry imposes a calibration burden before any audio data can be recovered: the reader must determine the exact center pixel and the mm/px scale from the image alone. A 5mm change in camera distance shifts every ring assignment. A 10° camera tilt turns circles into ellipses. Disc reading requires robust circle detection and homography correction before the audio read loop begins.
+
+The unrolled strip (Section 4 of `dsa_strip.py`) eliminates this entirely. It is a flat rectangle. Corner fiducial marks give four known reference points. A document scanner or a phone held roughly flat over it recovers the homography with standard OpenCV `findHomography`. The strip reads like a barcode — a well-understood scanning paradigm — while encoding exactly the same gradient data as the disc.
+
+**Strip format for physical tests:** the strip is the correct target for the first physical read. The disc format remains the long-term delivery target (the physical artefact, the artwork). The strip is the calibration and test instrument.
+
+### 17.2 Strip camera reader — geometry and fiducial marks
+
+A camera-readable strip requires two additions to the rendered PNG:
+
+**Corner fiducial marks:** four solid black squares (≈5mm side) at the four corners of the strip, inset by a white margin. OpenCV detects these as the largest dark rectangles in the frame, computes the homography, and warps the image to a canonical orientation before any pixel sampling. This corrects for:
+- Camera angle (perspective distortion)
+- Camera distance (scale normalization — converts pixels back to mm)
+- In-plane rotation (strip held at an angle)
+
+**Scale reference bar:** a 10mm solid line (or two marks exactly 10mm apart) at the left and right edges of the strip. After homography correction the reader measures this line in pixels, derives mm/px, and verifies the image is within the readable distance range before attempting the audio read. If mm/px is too small (camera too far → blur dominates) the reader warns before attempting the audio read.
+
+**Reading loop:** after homography correction, the strip is sampled identically to the virtual reader — two samples per (frame, band) cell at arc_pos 0.25 and 0.75, projected onto the color_a→color_b axis, steepness and direction recovered, α confidence computed. The output is identical to `dsa_reader.py`.
+
+### 17.3 Blur tolerance and print DPI
+
+From the degradation simulation (Section 17.4 and `dsa_degrade.py`), the blur tolerance at 300 DPI is σ < 1.5px before L0 or L1 fail. At 300 DPI, 1px = 0.085mm. So the maximum tolerable motion blur or defocus is approximately **0.13mm**. At 600 DPI, the same blur in mm = 0.13mm corresponds to σ = 3px but the arc width in pixels also doubles — the signal-to-noise ratio is identical. Higher DPI does not change the physical tolerance; it changes the printable spatial resolution.
+
+The practical implication: a phone in a stand (no hand shake) with the strip taped flat is achievable at 300 DPI. A handheld phone moving freely is likely to fail at 300 DPI and borderline at 600 DPI. A flatbed scanner is the most reliable first test.
+
+### 17.4 Experiment strip taxonomy
+
+Beyond the audio test strip, purpose-built calibration strips allow systematic characterization of the physical read system — the same information the pink noise transfer function method (Section 13.12) measures for the disc, but in strip form and with more direct visual inspection.
+
+#### 17.4.1 Pink noise calibration strip
+
+Encode a known pink noise signal as a strip. After camera read, compare the recovered coefficients against the known input band-by-band. The ratio `recovered / input` per band gives the gain response of the physical system (print → camera → reader pipeline) at each frequency layer.
+
+This is the strip equivalent of Section 13.12. The transfer function from a strip pink noise test:
+```
+H(b) = mean(|steep_read[b]|) / mean(|steep_input[b]|)   for each band b
+```
+A flat H(b) = 1.0 means perfect read. H(b) < 1.0 means the system attenuates band b — the encoder should apply pre-emphasis `1/H(b)` to that band before printing.
+
+Unlike the disc version (which requires a turntable and timed rotation measurement), the strip version is a single still image capture. This makes it practical as a first calibration target before any spinning hardware exists.
+
+#### 17.4.2 Gradient linearity test strip
+
+A strip where each column encodes a single known steepness value, swept from 0.0 to 1.0 in steps of 1/31 (the minimum Mode 1 step). Each row is one color pair. Purpose: verify that the reader recovers steepness linearly across the full range, and identify where the physical print departs from the digital model (e.g. ink spread compressing the top of the range).
+
+Expected result: a staircase plot of read_steepness vs encoded_steepness. Deviations from the diagonal indicate non-linearity that the pre-emphasis model must correct.
+
+#### 17.4.3 Direction detection threshold strip
+
+A strip where steepness decreases from left to right (1.0 → 0.0), with +1 direction encoded throughout. Purpose: find the minimum steepness at which the reader reliably recovers direction = +1 vs direction = 0 on a physical print.
+
+In simulation the threshold is steepness ≈ 0.032 (1/31). On a physical print, ink spread and camera noise will raise this threshold. The strip test measures the actual physical threshold, which can then be used to filter near-zero coefficient reads (anything below the physical threshold is treated as direction = 0 regardless of what the reader returns).
+
+#### 17.4.4 Color pair discriminability strip
+
+A strip of solid color blocks — one column per blend ratio (t = 0, 0.1, 0.2, … 1.0), one row per color pair — printed and photographed under different lighting conditions (indoor ambient, direct sunlight, dim light, colored LED). Purpose: measure which color pairs maintain their ΔE₀₀ under real-world lighting variation.
+
+The v1.1 optimization (Section 12.2.1) maximized perceptual contrast under standard D65 illumination. The physical strip test verifies whether that order survives real-world illumination shifts. If a pair with high D65 ΔE₀₀ collapses under fluorescent light, it needs reordering.
+
+#### 17.4.5 Resolution limit strip
+
+A strip where arc width decreases from left to right — wide arcs (easily readable) tapering to sub-pixel arcs — printed at multiple DPI settings (150, 300, 600) on the same sheet. Purpose: directly observe the minimum printable arc width at each DPI before the gradient becomes unresolvable.
+
+This gives the physical value of DISC_MIN_ARC_RIG_MM and DISC_MIN_ARC_PHONE_MM (currently estimated as 0.3mm and 0.5mm). The strip test replaces estimates with measurements for the specific printer and camera in use.
+
+### 17.5 Scanner / camera tester app design
+
+The goal is a single tool usable on any device (phone, tablet, laptop webcam) without installation. Two implementation tiers:
+
+**Tier 1 — Python + OpenCV (desktop/webcam)**
+Processes image files or live webcam frames. Implements fiducial detection, homography correction, strip read, and accuracy comparison. This is the development and validation tool — the authoritative reference reader for the strip format.
+
+**Tier 2 — HTML5 web app (any phone, no install)**
+Accesses `getUserMedia()` camera API. Implements the same geometry correction and cell sampling in JavaScript. Outputs a confidence overlay on the live camera frame so the user can see in real time which bands are reading well (green) or failing (red). Works on iOS and Android without an app store.
+
+The web app is the correct multi-device test instrument because it requires no installation and runs identically on every phone. It is deferred until Tier 1 is validated — the JavaScript reader must produce the same results as the Python reference reader on the same image before it is trusted for physical testing.
+
+**Key features for both tiers:**
+- Fiducial corner detection and perspective correction (automatic)
+- Scale bar measurement and distance warning (auto-reject if too far)
+- Per-band confidence overlay (live or post-process)
+- Export: steepness/direction/confidence arrays as JSON (same schema as `dsa_reader.py`)
+- Comparison mode: load a .disc.json, show accuracy against known values
+- Multi-frame averaging: capture N frames of the same strip, average confidence — reduces random noise
+
+### 17.6 Multi-device test protocol
+
+Once Tier 1 is available, the following test matrix characterizes the physical read system across devices:
+
+| Device | Distance (mm) | Lighting | JPEG quality | Expected result |
+|--------|--------------|---------|-------------|----------------|
+| Flatbed scanner | contact | backlit | lossless | baseline — best case |
+| Phone (stand) | 150mm | controlled LED | q=95 | operational target |
+| Phone (hand) | 150mm | ambient | q=80 | phone use case — L1 may fail |
+| Phone (hand) | 200mm | ambient | q=80 | distance limit test |
+| Laptop webcam | 300mm | monitor ambient | — | cheapest reader test |
+
+Each combination produces a direction accuracy / mean α result that populates the lookup table in Section 13.4. This directly calibrates the pre-emphasis model and the α weighting in the audio decoder.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*
