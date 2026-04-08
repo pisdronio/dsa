@@ -2356,18 +2356,60 @@ python3 dsa_cli.py decode test.dsa -o test.straight.wav
 
 #### Tier 1 — Screen photograph (tests optics, no printing)
 
-Display `test.fiducials.strip.png` fullscreen on any monitor. Photograph it with a phone held directly above the screen. The screen adds: JPEG compression, backlight variation, possible moire with monitor pixel grid.
+**Setup — generate readable strip (one-time):**
+
+```bash
+# Re-encode at 32 kbps to a fresh disc layout
+python3 dsa_cli.py disc test.wav -b 32
+
+# Render readable strip (cell_w=8) with fiducials at 300 DPI
+python3 dsa_strip.py test.disc.json \
+  --cell-w 8 --height 8 --fiducials --strip-dpi 300 \
+  --out test.readable.strip.png
+# → test.readable.strip.png  (3496×428 px, ~29×3.3 cm physical at 300 DPI)
+```
+
+**Procedure:**
+
+1. Open `test.readable.strip.png` in Preview / fullscreen image viewer.
+2. Set the monitor to max brightness, disable Night Shift / True Tone.
+3. Hold phone directly above the screen, ~30–40 cm, portrait or landscape.
+4. Take 3–5 photos at different distances and angles. Note which look sharpest.
+5. Run the reader on the best photo:
 
 ```bash
 python3 dsa_camera.py IMG_xxxx.jpg test.disc.json \
+  --cell-w 8 \
   --save-warped screen_warped.png \
   --out-overlay screen_overlay.png \
+  --conf-map screen_confmap.png \
   --debug-detect
 ```
 
-**Expected result:** direction accuracy 85–95%, mean α 0.80–0.92, grade GOOD. L2 (high frequency) bands will degrade first — they have the highest spatial frequency content and are most sensitive to JPEG compression.
+If auto-detect fails: add `--corner-frac 0.04` (fiducial squares are smaller relative to a monitor-filled image). If still failing, supply `--corners "x0,y0 x1,y1 x2,y2 x3,y3"` manually from the photo.
 
-If auto-detect fails: run with `--debug-detect` to see what contours were found, then use `--corner-frac 0.04` (corners are smaller relative to a monitor-filled image) or supply `--corners` manually.
+**What to record:**
+
+| Metric | Expected range | Your result |
+|--------|---------------|-------------|
+| Direction accuracy (all bands) | 85–95% | |
+| Mean α (all bands) | 0.80–0.92 | |
+| Mean α — L0 (bands 0–7) | 0.85–0.98 | |
+| Mean α — L1 (bands 8–23) | 0.80–0.95 | |
+| Mean α — L2 (bands 24–47) | 0.70–0.90 | |
+| First layer where α drops below 0.70 | (expect L2) | |
+| Any moire visible in `screen_warped.png`? | — | |
+
+**Expected degradation pattern:** L2 (high frequency, 24–47) fails first because those bands have the narrowest gradients (highest spatial frequency) and are most sensitive to screen pixel grid interference and JPEG compression. L0 should survive well (widest gradient, lowest spatial frequency).
+
+**Pass criteria:** direction accuracy ≥ 85%, mean α ≥ 0.80. If accuracy falls below this on first attempt, try a larger cell_w (e.g. `--cell-w 12`) and regenerate the strip.
+
+**Failure modes to diagnose:**
+
+- *Auto-detect fails entirely*: fiducial corners not found. Use `--debug-detect` to see candidate contours. Often caused by screen glare washing out corners.
+- *Low α on all bands equally*: homography warp is slightly off (use `--save-warped` and inspect — strip should be rectangular, bands horizontal). Try supplying `--corners` manually.
+- *Low α on L2 only, L0/L1 fine*: expected moire/JPEG degradation. Acceptable for Tier 1.
+- *Asymmetric L/R accuracy* (direction correct on one side but not the other): likely a lens distortion or non-perpendicular phone angle — retake photo.
 
 #### Tier 2 — Physical print
 

@@ -219,12 +219,12 @@ class TestBandGradientRow:
         assert recovered == sorted(recovered), "Recovered steepness not monotone with input"
 
     def test_steepness_proportional(self):
-        """Recovered steepness should be within 25% of input (pixel quantisation tolerance)."""
+        """Recovered steepness should be within 2% of input (uint8 quantisation only)."""
         for s in [0.2, 0.4, 0.6, 0.8]:
             row  = _band_gradient_row(s, 1, self.ca, self.cb, cell_w=8)
             _, rs = self._sample(row, cell_w=8)
-            assert abs(rs - s) < 0.25 * s + 0.05, (
-                f"steepness={s}: recovered {rs:.4f}, error {abs(rs-s):.4f}")
+            assert abs(rs - s) < 0.02, (
+                f"steepness={s}: recovered {rs:.4f}, error {abs(rs-s):.5f}")
 
     def test_direction_positive_left_to_right(self):
         """direction=+1: leftmost pixel should be closer to ca, rightmost to cb."""
@@ -468,10 +468,10 @@ class TestTier0Baseline:
         l0_mean = float(alpha[:8].mean())
         assert l0_mean >= 0.90, f"L0 mean α {l0_mean:.4f} < 0.90"
 
-    def test_steepness_mae_lt_25pct(self, pipeline):
-        """Steepness mean absolute error should stay below 0.25 (pixel quantisation bias)."""
+    def test_steepness_mae_lt_12pct(self, pipeline):
+        """Steepness mean absolute error should stay below 0.12 (uint8 quantisation only)."""
         mae = pipeline['stats']['steepness_mae']
-        assert mae < 0.25, f"Steepness MAE {mae:.4f} ≥ 0.25"
+        assert mae < 0.12, f"Steepness MAE {mae:.4f} ≥ 0.12"
 
     def test_compare_layout_structure(self, pipeline):
         """compare_layout must return all expected keys."""

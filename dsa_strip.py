@@ -103,13 +103,15 @@ def _band_gradient_row(steepness: float, direction: int,
         return row.astype(np.uint8)
 
     for xi in range(cell_w):
-        f = xi / (cell_w - 1) if cell_w > 1 else 0.5   # 0.0 → 1.0
+        f = xi / cell_w   # pixel-centre convention: 0.0 → (cell_w−1)/cell_w
         if direction > 0:
-            t = f * steepness          # left=0(ca) → right=steepness
+            t = f * steepness          # left=0(ca) → right≈steepness
         else:
-            t = (1.0 - f) * steepness  # left=steepness(toward cb) → right=0(ca)
+            t = (1.0 - f) * steepness  # left≈steepness(toward cb) → right=0(ca)
         t = max(0.0, min(1.0, t))
-        row[xi] = lerp_lab(ca, cb, np.array(t)).astype(np.float32)
+        # Linear RGB interpolation (not LAB) so that _color_to_blend linear
+        # projection recovers t exactly, matching the reader's assumption.
+        row[xi] = (ca + t * (cb - ca)).astype(np.float32)
 
     return row.astype(np.uint8)
 
