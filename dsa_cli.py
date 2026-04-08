@@ -9,6 +9,7 @@ Subcommands
   disc     audio/.dsa → Digilog disc layout JSON
   bench    benchmark DSA vs Opus at multiple bitrates
   info     print header info for a .dsa file
+  camera   read a photograph of a printed strip → confidence + accuracy report
 
 Usage
 -----
@@ -18,6 +19,8 @@ Usage
   python3 dsa_cli.py disc   song.mp3 --bitrate 12 --mode 2 --per-coeff
   python3 dsa_cli.py bench  --quick
   python3 dsa_cli.py info   song.dsa
+  python3 dsa_cli.py camera photo.jpg song.disc.json
+  python3 dsa_cli.py camera photo.jpg song.disc.json --save-warped warped.png
 """
 
 import argparse
@@ -219,6 +222,48 @@ def cmd_info(args):
     print()
 
 
+# ─── camera ───────────────────────────────────────────────────────────────────
+
+def cmd_camera(args):
+    import dsa_camera as cam
+
+    cam.main.__module__  # ensure import worked
+    # Reconstruct argv so dsa_camera.main() parses correctly
+    import sys as _sys
+    old_argv = _sys.argv
+    _sys.argv = ['dsa_camera.py', args.photo, args.layout]
+    if args.cell_h != 8:
+        _sys.argv += ['--cell-h', str(args.cell_h)]
+    if args.border is not None:
+        _sys.argv += ['--border', str(args.border)]
+    if args.strip_dpi != 300:
+        _sys.argv += ['--strip-dpi', str(args.strip_dpi)]
+    if args.corners:
+        _sys.argv += ['--corners', args.corners]
+    if args.no_cv:
+        _sys.argv.append('--no-cv')
+    if args.corner_frac != 0.08:
+        _sys.argv += ['--corner-frac', str(args.corner_frac)]
+    if args.debug_detect:
+        _sys.argv.append('--debug-detect')
+    if args.save_warped:
+        _sys.argv += ['--save-warped', args.save_warped]
+    if args.out_overlay:
+        _sys.argv += ['--out-overlay', args.out_overlay]
+    if args.conf_map:
+        _sys.argv += ['--conf-map', args.conf_map]
+    if args.out_json:
+        _sys.argv += ['--out-json', args.out_json]
+    if args.decode:
+        _sys.argv += ['--decode', args.decode]
+    if args.out:
+        _sys.argv += ['--out', args.out]
+    try:
+        cam.main()
+    finally:
+        _sys.argv = old_argv
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -228,19 +273,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  dsa encode song.mp3                      encode at default 12 kbps
-  dsa encode song.mp3 -b 32 -o song.dsa   32 kbps, explicit output
-  dsa encode song.mp3 --mode 2             gradient Mode 2 encoding
-  dsa decode song.dsa                      decode to song.wav
-  dsa decode song.dsa --reverse            reverse playback
-  dsa decode song.dsa --layers 0           bass-only (L0)
-  dsa decode song.dsa --alpha 0.3          analog degradation simulation
-  dsa disc   song.mp3                      disc layout JSON at 12 kbps
-  dsa disc   song.mp3 -b 96 --mode 2       high-bitrate gradient layout
-  dsa disc   song.mp3 --per-coeff          per-coefficient JSON
-  dsa bench  --quick                       fast benchmark vs Opus
-  dsa bench  --csv > results.csv           CSV output for plotting
-  dsa info   song.dsa                      print .dsa file metadata
+  dsa encode song.mp3                               encode at default 12 kbps
+  dsa encode song.mp3 -b 32 -o song.dsa            32 kbps, explicit output
+  dsa encode song.mp3 --mode 2                      gradient Mode 2 encoding
+  dsa decode song.dsa                               decode to song.wav
+  dsa decode song.dsa --reverse                     reverse playback
+  dsa decode song.dsa --layers 0                    bass-only (L0)
+  dsa decode song.dsa --alpha 0.3                   analog degradation simulation
+  dsa disc   song.mp3                               disc layout JSON at 12 kbps
+  dsa disc   song.mp3 -b 96 --mode 2                high-bitrate gradient layout
+  dsa disc   song.mp3 --per-coeff                   per-coefficient JSON
+  dsa bench  --quick                                fast benchmark vs Opus
+  dsa bench  --csv > results.csv                    CSV output for plotting
+  dsa info   song.dsa                               print .dsa file metadata
+  dsa camera photo.jpg song.disc.json               read physical strip photo
+  dsa camera photo.jpg song.disc.json --save-warped warped.png
+  dsa camera photo.jpg song.disc.json --corners "10,12 820,8 825,610 5,615"
         """,
     )
 
@@ -295,6 +343,40 @@ examples:
     p_inf = sub.add_parser('info', help='print .dsa file metadata')
     p_inf.add_argument('input', help='.dsa file')
 
+    # ── camera ──
+    p_cam = sub.add_parser('camera',
+                            help='read a photo of a printed strip — Tier 1 physical validation')
+    p_cam.add_argument('photo',   help='photo of printed strip (JPG/PNG)')
+    p_cam.add_argument('layout',  help='.disc.json layout file')
+    p_cam.add_argument('--cell-h',     type=int,   default=8,
+                       help='pixel height per band row used when printing (default: 8)')
+    p_cam.add_argument('--border',     type=int,   default=None,
+                       help='border width px (default: auto from --strip-dpi)')
+    p_cam.add_argument('--strip-dpi',  type=int,   default=300,
+                       help='DPI used when printing (default: 300)')
+    p_cam.add_argument('--corners',    type=str,   default=None,
+                       metavar='"x0,y0 x1,y1 x2,y2 x3,y3"',
+                       help='manual TL TR BR BL corner positions in photo (skips auto-detect)')
+    p_cam.add_argument('--no-cv',      action='store_true',
+                       help='skip OpenCV (requires --corners)')
+    p_cam.add_argument('--corner-frac', type=float, default=0.08,
+                       help='expected corner square size as fraction of shorter image side '
+                            '(default: 0.08; reduce if corners are small)')
+    p_cam.add_argument('--debug-detect', action='store_true',
+                       help='print fiducial detection debug info')
+    p_cam.add_argument('--save-warped',  type=str,  default=None,
+                       help='save rectified strip image to PATH')
+    p_cam.add_argument('--out-overlay',  type=str,  default=None,
+                       help='save confidence overlay on warped strip to PATH')
+    p_cam.add_argument('--conf-map',     type=str,  default=None,
+                       help='save compact confidence heatmap to PATH')
+    p_cam.add_argument('--out-json',     type=str,  default=None,
+                       help='save read results JSON to PATH')
+    p_cam.add_argument('--decode',       type=str,  default=None,
+                       help='.dsa bitstream to decode using camera read confidence')
+    p_cam.add_argument('-o', '--out',    type=str,  default=None,
+                       help='decoded WAV output path (requires --decode)')
+
     args = parser.parse_args()
 
     dispatch = {
@@ -303,6 +385,7 @@ examples:
         'disc':   cmd_disc,
         'bench':  cmd_bench,
         'info':   cmd_info,
+        'camera': cmd_camera,
     }
     dispatch[args.command](args)
 

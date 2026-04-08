@@ -2092,7 +2092,7 @@ All of these are constructible from first-principles DSP: sine oscillators, nois
 
 ## 17. Physical Test Methodology — Strip Experiments and Camera Reader
 
-**Status:** Active development — April 2026. Strip camera reader planned; web app deferred.
+**Status:** Active development — April 2026. Strip camera reader implemented (`dsa_camera.py`, Tier 1); web app deferred.
 
 ---
 
@@ -2169,6 +2169,20 @@ The goal is a single tool usable on any device (phone, tablet, laptop webcam) wi
 
 **Tier 1 — Python + OpenCV (desktop/webcam)**
 Processes image files or live webcam frames. Implements fiducial detection, homography correction, strip read, and accuracy comparison. This is the development and validation tool — the authoritative reference reader for the strip format.
+
+**Implemented:** `dsa_camera.py` (April 2026). Also exposed as `dsa camera` via the unified CLI.
+
+Pipeline:
+1. Load photo (any resolution, any phone or scanner)
+2. Auto-detect 4 corner fiducials via adaptive threshold + contour filtering — or accept `--corners` override
+3. Compute perspective homography (photo → canonical strip space matching `dsa_strip.py --fiducials`)
+4. Warp photo to canonical dimensions
+5. Measure DPI from 10mm scale bar (warns if >15% deviation from nominal)
+6. Sample each (frame, band) cell at left-quarter and right-quarter x positions — identical math to `dsa_reader.py`
+7. Report steepness MAE, direction accuracy, per-band mean confidence α, and an overall quality grade
+8. Optional outputs: rectified strip PNG (`--save-warped`), confidence overlay PNG (`--out-overlay`), compact heatmap PNG (`--conf-map`), results JSON (`--out-json`), decoded WAV (`--decode`)
+
+Dependencies: `Pillow` (required), `opencv-python` (optional — enables auto corner detection and accurate perspective warp; falls back to manual corners + affine if absent).
 
 **Tier 2 — HTML5 web app (any phone, no install)**
 Accesses `getUserMedia()` camera API. Implements the same geometry correction and cell sampling in JavaScript. Outputs a confidence overlay on the live camera frame so the user can see in real time which bands are reading well (green) or failing (red). Works on iOS and Android without an app store.
