@@ -37,6 +37,8 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
+from dsa_color import lerp_lab
+
 # ─── Layer boundaries ─────────────────────────────────────────────────────────
 
 L0_BANDS  = range(0,  8)   # bass
@@ -67,15 +69,16 @@ def _band_color(steepness: float, direction: int,
                 ca: np.ndarray, cb: np.ndarray) -> np.ndarray:
     """
     Single representative color for a (frame, band) cell.
-    Uses the midpoint of the arc (arc_pos = 0.5) to pick a representative blend.
+    Uses the midpoint of the arc (arc_pos = 0.5) and LAB interpolation
+    for perceptually uniform gradient representation.
     """
     if direction == 0 or steepness < 0.001:
         return ca
-    t = 0.5 * steepness  # midpoint blend
+    t = 0.5 * steepness
     if direction < 0:
         t = steepness - t
     t = max(0.0, min(1.0, t))
-    return ca + (cb - ca) * t
+    return lerp_lab(ca, cb, np.array(t)).astype(np.float32)
 
 
 def render_strip(layout_path: str,

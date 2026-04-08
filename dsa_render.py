@@ -39,6 +39,8 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
+from dsa_color import rgb_to_lab, lab_to_rgb
+
 
 # ─── Disc geometry (all in mm) ────────────────────────────────────────────────
 
@@ -111,11 +113,15 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
             dir_[fi, b]   = bd['direction']
 
     # Per-band color arrays: shape (n_bands, 3)
-    ca = np.zeros((n_bands, 3), dtype=np.float32)
-    cb = np.zeros((n_bands, 3), dtype=np.float32)
+    ca_rgb = np.zeros((n_bands, 3), dtype=np.float64)
+    cb_rgb = np.zeros((n_bands, 3), dtype=np.float64)
     for b in range(n_bands):
-        ca[b] = PALETTE[bp_map[b][0]]
-        cb[b] = PALETTE[bp_map[b][1]]
+        ca_rgb[b] = PALETTE[bp_map[b][0]]
+        cb_rgb[b] = PALETTE[bp_map[b][1]]
+
+    # Pre-convert to LAB for perceptually uniform interpolation
+    ca_lab = rgb_to_lab(ca_rgb)   # (n_bands, 3)
+    cb_lab = rgb_to_lab(cb_rgb)   # (n_bands, 3)
 
     print("done")
 
@@ -196,10 +202,10 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None) -> str:
                           s * (1.0 - pos))).astype(np.float32)
     np.clip(t, 0.0, 1.0, out=t)
 
-    # Vectorized color interpolation
-    t3     = t[:, np.newaxis]                                    # (N, 1)
-    colors = (ca[bi] + (cb[bi] - ca[bi]) * t3).astype(np.uint8) # (N, 3)
-    img[ay, ax] = colors
+    # Perceptually uniform color interpolation via CIELAB
+    t3        = t[:, np.newaxis]                                        # (N, 1)
+    mixed_lab = ca_lab[bi] + (cb_lab[bi] - ca_lab[bi]) * t3            # (N, 3)
+    img[ay, ax] = lab_to_rgb(mixed_lab)                                 # (N, 3) uint8
 
     print("done")
 
