@@ -106,25 +106,25 @@ DISC_MAX_DURATION_PHONE_S    = DISC_MAX_FRAMES_PHONE    * (1024 / 44100)  # ~18.
 
 _L0_PAIRS = [
     ('black', 'white'),
+    ('blue', 'yellow'),
     ('black', 'yellow'),
-    ('black', 'cyan'),
 ]
 
 _L1_PAIRS = [
-    ('red',  'cyan'),
-    ('blue', 'yellow'),
+    ('black', 'white'),
     ('green', 'purple'),
+    ('blue', 'yellow'),
 ]
 
 _L2_PAIRS = [
     ('black', 'white'),
-    ('red',   'cyan'),
-    ('blue',  'yellow'),
     ('green', 'purple'),
+    ('blue', 'yellow'),
     ('black', 'yellow'),
+    ('yellow', 'purple'),
+    ('red', 'green'),
     ('black', 'cyan'),
-    ('red',   'purple'),
-    ('blue',  'green'),
+    ('green', 'blue'),
 ]
 
 
