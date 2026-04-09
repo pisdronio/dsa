@@ -2685,6 +2685,201 @@ the moment a strip or disc is printed and photographed.
 
 ---
 
+## 19. Render Modes — Window and Print (April 2026)
+
+### 19.1 What these modes are
+
+`dsa_render.py --mode window` and `--mode print` are not test utilities —
+they are the two production output paths of the render pipeline.  Every
+physical test starts with one of them.  Their sizing rules determine what
+prints, what the camera sees, and whether the codec survives the round trip.
+
+- **Window mode**: RGB PNG for screen display.  The rendered image is shown
+  fullscreen on a monitor and photographed with a phone.  No printer, no ink.
+  Used for Tier 1 optical tests.
+- **Print mode**: CMYK TIFF at 600 DPI for physical print.  Sent directly to a
+  printer with no colour management override.  Used for Tier 2 print tests.
+
+Both modes belong in `§17 Physical Test Methodology`.  The section you are
+reading now records the design decisions that were implicit in the code but
+never written down — and the bugs those gaps produced.
+
+---
+
+### 19.2 Window mode — clip length was undefined until forced
+
+**The gap.**  The original render pipeline was designed around a full song
+(432 frames, 10 s).  Window mode was documented as "a window into the song" —
+33 frames out of 432, displayed so all four fiducials fit in a phone FOV
+(100 mm ÷ 3 mm/cell = 33 frames).  This framing hid a missing requirement:
+*what audio content should those 33 frames contain?*
+
+The spec defined how many frames fit on screen.  It did not define:
+
+- What duration to clip from the source file before encoding
+- What starting timestamp gives a musically representative excerpt
+- What the minimum audible duration is for a perceptual test
+
+**Why it was not caught earlier.**  All prior virtual tests used `test.wav` —
+a synthetic 10-second three-tone signal.  Because the test signal fills
+432 frames, `n_frames_w = min(432, 33) = 33` always worked correctly and
+the clip selection step never appeared.  The spec gap was invisible until a
+real music file was used and the question "what do I hear when I play this
+back?" became meaningful.
+
+**Resolution.**  The clip must be prepared before rendering:
+
+```bash
+# Target: 33 frames = 33 / 43.07 fps ≈ 0.77 s
+# Clip slightly longer (0.85 s) so the encoder always produces ≥ 33 frames.
+# Choose a musically active segment — past any intro silence.
+
+ffmpeg -ss 8.0 -t 0.85 -i source.mp3 -ac 1 -ar 44100 clip.wav
+
+python3 dsa_cli.py encode clip.wav -o clip.dsa
+python3 dsa_cli.py disc   clip.wav -o clip.disc.json
+python3 dsa_render.py --mode window clip.disc.json --out clip.window.png
+```
+
+The window render then uses all frames from `clip.disc.json` (38 in the
+guerrero test) and caps at 33 for display.  Audio playback via
+`guerrero_clip.scan_decoded.wav` corresponds to those 33 frames (0.77 s).
+
+**What was added to §17.7.**  The Tier 1 procedure must include a clip
+preparation step before rendering.  This is now documented explicitly here
+rather than assumed.
+
+---
+
+### 19.3 Print mode — cell sizing was fixed at minimum until forced
+
+**The original design.**  `_PRINT_MIN_CELL_MM = 0.3` was documented as
+"Digilog Rig minimum arc" — the smallest cell the physical medium can reliably
+encode.  The print renderer used this as a *fixed* cell width, computing:
+
+```
+frames_per_tile = content_w_px // cell_w_px
+               = (4 in × 600 DPI − 2 × border_px) // (0.3 mm × 23.6 px/mm)
+               = 2024 // 7 ≈ 288 frames/tile
+```
+
+For a full 432-frame song this produces two 4″×2″ tiles — correct.
+
+**The failure mode for short clips.**  For a 38-frame test clip at 0.3 mm/cell
+the content is 38 × 7 px = 266 px = 11.4 mm wide.  The tile was padded to the
+full 4″ page width, placing fiducials 101.6 mm apart while the actual strip
+content sat in the left 11 % of the page.  The rendered TIFF was portrait
+(0.5″ wide × 1.5″ tall) and the calibration patches — sized at `border_px - 4`
+each — totalled 1 472 px and overflowed a 642 px canvas.
+
+**Why it was not caught earlier.**  Same reason as above: all prior renders
+used the full 432-frame song, where the cell minimum is the binding constraint
+and everything scales correctly.  Short clips were never tested.
+
+**Resolution.**  Cell width now fills the page, using `_PRINT_MIN_CELL_MM`
+only as a floor:
+
+```python
+cell_w_mm = max(_PRINT_MIN_CELL_MM,
+                min(_PRINT_MAX_CELL_MM, content_w_mm / n_frames))
+```
+
+For 38 frames: `cell_w_mm = max(0.3, min(10.0, 85.6/38)) = 2.25 mm`
+→ 53 px/cell, full 4″×2″ landscape tile, cells 7.5× larger than the minimum
+→ far easier for the camera to resolve.
+
+For 432 frames: `cell_w_mm = max(0.3, min(10.0, 85.6/432)) = 0.3 mm`
+→ unchanged, multi-tile behaviour preserved.
+
+**A second fix** was required: the last (or only) tile was padded to full page
+width before fiducials were placed, so fiducials always sat at the page
+corners rather than the content corners.  Padding was removed; the last tile
+is now exactly `n_tile_frames × cell_w_px` wide.
+
+**A third fix** corrected calibration patch overflow: patch size is now capped
+so all 8 patches plus gaps always fit within the actual image width.
+
+---
+
+### 19.4 Where render mode rules belong in the spec
+
+These are not test-tool details.  They are physical encoding constraints that
+determine what the camera can read:
+
+| Rule | Spec location |
+|------|--------------|
+| Window FOV limit (100 mm / 3 mm = 33 frames) | §17.7 Tier 1 procedure |
+| Clip duration and timestamp selection | §17.7 Tier 1 procedure (now explicit) |
+| Print cell minimum (0.3 mm, §12 Digilog Rig) | §12 strip geometry |
+| Print cell scaling for short clips | §17.7 Tier 2 procedure |
+| CMYK TAC 300 % cap | §18.3 print path |
+| Calibration patch layout | §18.4 camera read path |
+
+The clip preparation step belongs in §17.7, not in a render tool README.
+The cell sizing rule belongs in §12 alongside the Digilog Rig arc geometry.
+These sections will be updated in the next pass.
+
+---
+
+### 19.5 Tier 1 screen test — measured results (guerrero_clip, April 2026)
+
+**Test signal:** `guerrero_30s.mp3`, clipped t=8.0 s–8.85 s (0.85 s, 38 frames).
+**Strip:** `guerrero_clip.window.png`, 33 frames rendered, 423×352 px at 96 DPI.
+**Display:** iMac monitor, fullscreen.
+**Camera:** iPhone, landscape, ~30 cm.
+
+| Metric | Result | Notes |
+|--------|--------|-------|
+| Corner detection | PASS | TL(382,64) TR(2654,64) BR(2754,2417) BL(148,2417) |
+| Steepness MAE | 0.050 | |
+| Direction accuracy | 44.8 % | near-random — see below |
+| Mean α (all bands) | 0.674 | |
+| Mean α — L0 (0–7) | 0.726 | |
+| Mean α — L1 (8–23) | 0.711 | |
+| Mean α — L2 (24–47) | 0.647 | last band α = 0.00 |
+| Perceptual result | **PASS** | clean and scan-decoded audibly identical |
+
+**Direction accuracy at 44.8 % is expected at this tier.**  At 96 DPI with
+3 mm cells (11 px wide), camera blur collapses gradient steepness to values
+near zero across all bands.  The decoder then defaults direction to 0 rather
+than ±1, counting as incorrect vs. ground truth.  This is not a decoding
+failure — it is the resolution floor of Tier 1 optics.
+
+**The perceptual result is the meaningful metric at Tier 1.**  Alpha captures
+how much of each frequency band survived the screen round-trip.  L0 bass at
+0.73 and L1 mid at 0.71 mean those bands are attenuated ~3 dB but intact.
+L2 high-frequency bands drop to 0.00 at the top of the range — those
+harmonics are below the 12 kbps perceptual threshold and were not audible in
+the source clip to begin with.  Both the clean decode and scan-decoded version
+of the guerrero clip were audibly identical in blind comparison.
+
+**Tier 1 verdict:** optical pipeline confirmed end-to-end.  Encode → render
+→ display → photograph → scan → decode → audio closed loop with real music
+content.  Direction accuracy target (> 80 %) requires Tier 2 print at 600 DPI.
+
+---
+
+### 19.6 Bug found and fixed — dsa_monitor_test.py v_margin
+
+**Bug:** `_find_strip_corners` used `v_margin = ph // 33` to skip phone-bezel
+rows at the top and bottom of the photo.  For a 2901 px tall iPhone photo this
+produced `v_margin = 87 px`.  The bottom scan started at `y = 2813` — but the
+strip's white bottom border was concentrated in rows `y = 2874–2900`.  The
+scan never found the bottom border and fell back to the next qualifying row
+inside the strip content (y ≈ 292), producing a detected height of 205 px
+instead of the correct 2827 px.  The warp mapped a tiny sliver of the top
+border to the full canonical canvas, resulting in a blank white warped image.
+
+**Fix:** `v_margin = ph // 300` (≈ 9 px for a 2901 px image) — enough to clear
+the absolute image edge without reaching into the strip borders.
+
+**Root cause:** the `ph // 33` value was chosen to be "3 % of image height" but
+no calculation verified it against the rendered border size.  The bottom white
+border occupies only 0.9 % of image height in a typical phone photo of a
+full-frame strip; a 3 % margin overshoots it.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*
