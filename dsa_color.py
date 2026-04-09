@@ -241,6 +241,60 @@ def monotonicity_score(ca_rgb, cb_rgb, steps: int = 10) -> float:
     return float(min(diffs))
 
 
+# ─── Canonical palette constants — single source of truth ────────────────────
+#
+# PALETTE_RGB  : sRGB tuples (0–255).  Display and virtual-pipeline default.
+# PALETTE_LAB  : CIELAB arrays (device-independent canonical form, §18.2).
+# PALETTE_CMYK : CMYK ink percentages (0–100), derived via standard RGB→CMYK.
+#                Tune against physical print before production use.
+#
+# All other DSA files import from here.  No color constants defined elsewhere.
+# Change a value once; it propagates to the entire stack.
+
+PALETTE_RGB: dict = {
+    'black':  (0,   0,   0  ),
+    'white':  (255, 255, 255),
+    'red':    (220, 50,  50 ),
+    'green':  (50,  180, 50 ),
+    'blue':   (50,  50,  220),
+    'yellow': (240, 220, 0  ),
+    'cyan':   (0,   210, 210),
+    'purple': (160, 50,  200),
+}
+
+# Lab values computed from PALETTE_RGB via rgb_to_lab (D65, IEC 61966-2-1).
+PALETTE_LAB: dict = {
+    name: rgb_to_lab(np.array(rgb, dtype=np.float64))
+    for name, rgb in PALETTE_RGB.items()
+}
+
+# CMYK derived via standard RGB→CMYK with K-extraction.
+# Percentages 0–100; multiply by 2.55 for PIL CMYK (0–255 per channel).
+def _rgb_to_cmyk_pct(r: int, g: int, b: int) -> tuple:
+    c, m, y = 1 - r / 255.0, 1 - g / 255.0, 1 - b / 255.0
+    k = min(c, m, y)
+    if k < 1.0:
+        s = 1.0 - k
+        c, m, y = (c - k) / s, (m - k) / s, (y - k) / s
+    else:
+        c = m = y = 0.0
+    return (round(c * 100), round(m * 100), round(y * 100), round(k * 100))
+
+PALETTE_CMYK: dict = {
+    name: _rgb_to_cmyk_pct(*rgb)
+    for name, rgb in PALETTE_RGB.items()
+}
+
+# ─── Fiducial marker ──────────────────────────────────────────────────────────
+#
+# Magenta (255,0,255) is absent from PALETTE_RGB and unreachable by gradient
+# interpolation between any band-pair endpoints (§18.2).  Single source of
+# truth — import from here, never redefine in other files.
+
+FIDUCIAL_RGB       = (255, 0, 255)
+FIDUCIAL_THRESHOLD = dict(r_min=200, g_max=50, b_min=200)
+
+
 # ─── Color pair analysis ─────────────────────────────────────────────────────
 
 # Current DSA v1 palette

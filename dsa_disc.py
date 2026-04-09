@@ -49,20 +49,12 @@ from dsa_bitstream import (
     DSABitstreamReader, DSABitstreamWriter,
     MODE_DISCRETE, MODE_GRADIENT,
 )
+from dsa_color import PALETTE_RGB
 
 # ─── Color palette ────────────────────────────────────────────────────────────
 
-# Eight physical colors on the Digilog disc — RGB values for the disc renderer
-PALETTE = {
-    'black':  (0,   0,   0),
-    'white':  (255, 255, 255),
-    'red':    (220, 50,  50),
-    'green':  (50,  180, 50),
-    'blue':   (50,  50,  220),
-    'yellow': (240, 220, 0),
-    'cyan':   (0,   210, 210),
-    'purple': (160, 50,  200),
-}
+# Canonical palette imported from dsa_color — single source of truth (§18.5).
+PALETTE = PALETTE_RGB
 
 # ─── Disc capacity limits ────────────────────────────────────────────────────
 #

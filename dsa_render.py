@@ -39,7 +39,7 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
-from dsa_color import rgb_to_lab, lab_to_rgb
+from dsa_color import rgb_to_lab, lab_to_rgb, PALETTE_RGB, FIDUCIAL_RGB, FIDUCIAL_THRESHOLD
 
 
 # ─── Disc geometry (all in mm) ────────────────────────────────────────────────
@@ -57,47 +57,36 @@ NUM_BANDS          = 48
 
 # ─── Fiducial marker ──────────────────────────────────────────────────────────
 #
-# Magenta (255,0,255) is absent from the 8-color DSA palette and unreachable
-# by gradient interpolation between any band-pair endpoints.  The detector in
-# dsa_reader.py isolates it with a three-channel threshold that no audio
-# content can satisfy, regardless of what is encoded.
-#
-# Change both constants together if the fiducial color is ever revised.
+# FIDUCIAL_RGB and FIDUCIAL_THRESHOLD imported from dsa_color (§18.5).
+# Minimum physical size that survives print + phone-photo at arm's length.
 
-FIDUCIAL_RGB       = (255, 0, 255)
-FIDUCIAL_THRESHOLD = dict(r_min=200, g_max=50, b_min=200)
-
-# Minimum physical size (mm) that survives print + phone-photo at arm's length.
-FIDUCIAL_MM        = 8.0
+FIDUCIAL_MM = 8.0
 
 # ─── Color palette ────────────────────────────────────────────────────────────
 
+# Canonical RGB from dsa_color — single source of truth (§18.5).
 PALETTE: dict[str, np.ndarray] = {
-    'black':  np.array([0,   0,   0],   dtype=np.float32),
-    'white':  np.array([255, 255, 255], dtype=np.float32),
-    'red':    np.array([220, 50,  50],  dtype=np.float32),
-    'green':  np.array([50,  180, 50],  dtype=np.float32),
-    'blue':   np.array([50,  50,  220], dtype=np.float32),
-    'yellow': np.array([240, 220, 0],   dtype=np.float32),
-    'cyan':   np.array([0,   210, 210], dtype=np.float32),
-    'purple': np.array([160, 50,  200], dtype=np.float32),
+    name: np.array(rgb, dtype=np.float32)
+    for name, rgb in PALETTE_RGB.items()
 }
 
 
 def render_disc(layout_path: str, dpi: int = 300, out_path: str = None,
-                spiral: bool = False, rpm: float = 33.0) -> str:
+                spiral: bool = False, rpm: float = 33.0,
+                output_format: str = 'rgb') -> str:
     """
-    Render a .disc.json layout to a PNG disc image.
+    Render a .disc.json layout to a disc image.
 
     Parameters
     ----------
-    layout_path : path to .disc.json produced by dsa_disc.py / dsa_cli.py disc
-    dpi         : output resolution in DPI (300 = good print, 600 = high-res)
-    out_path    : output PNG path; defaults to layout_path with .png extension
+    layout_path   : path to .disc.json produced by dsa_disc.py / dsa_cli.py disc
+    dpi           : output resolution in DPI (300 = good print, 600 = high-res)
+    out_path      : output path; defaults to layout_path with appropriate extension
+    output_format : 'rgb' (default) → RGB PNG; 'cmyk' → CMYK TIFF for print
 
     Returns
     -------
-    Path to the saved PNG file.
+    Path to the saved file.
     """
 
     # ── Load layout ───────────────────────────────────────────────────────────
@@ -317,24 +306,56 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None,
     # audio content.  Size: max(8px, FIDUCIAL_MM mm) so they survive rescaling.
     fid_px = max(8, int(FIDUCIAL_MM * mm_to_px))
     for (x0, y0) in [
-        (0,              0),               # TL
-        (disc_px - fid_px, 0),             # TR
-        (0,              disc_px - fid_px),# BL
-        (disc_px - fid_px, disc_px - fid_px),  # BR
+        (0,                0),
+        (disc_px - fid_px, 0),
+        (0,                disc_px - fid_px),
+        (disc_px - fid_px, disc_px - fid_px),
     ]:
         draw.rectangle([x0, y0, x0 + fid_px - 1, y0 + fid_px - 1],
                        fill=FIDUCIAL_RGB)
 
+    # --- Calibration patch strip (§18.4) ---
+    # One solid 8×8mm patch per palette color, in PALETTE_RGB key order,
+    # arranged in a horizontal row centred inside the center label area
+    # (r < label_px).  The reader samples these patches to build a per-read
+    # Lab affine remap that compensates for ink, paper, and camera variance.
+    cal_px   = max(8, int(8.0 * mm_to_px))   # 8mm per patch
+    gap_px   = max(2, int(1.0 * mm_to_px))   # 1mm gap between patches
+    n_cal    = len(PALETTE_RGB)               # 8
+    row_w    = n_cal * cal_px + (n_cal - 1) * gap_px
+    cal_x0   = ctr - row_w // 2
+    cal_y0   = ctr - cal_px // 2             # centred vertically in label
+    for i, (name, rgb) in enumerate(PALETTE_RGB.items()):
+        px = cal_x0 + i * (cal_px + gap_px)
+        draw.rectangle([px, cal_y0, px + cal_px - 1, cal_y0 + cal_px - 1],
+                       fill=rgb)
+
     # ── Save ──────────────────────────────────────────────────────────────────
     if out_path is None:
-        base = str(Path(layout_path).with_suffix('').with_suffix(''))  # strip .disc.json
-        if spiral:
-            out_path = base + f'.spiral_{int(rpm)}rpm.png'
+        base = str(Path(layout_path).with_suffix('').with_suffix(''))
+        if output_format == 'cmyk':
+            suffix = f'.spiral_{int(rpm)}rpm.tif' if spiral else '.cmyk.tif'
         else:
-            out_path = str(Path(layout_path).with_suffix('.png'))
+            suffix = f'.spiral_{int(rpm)}rpm.png' if spiral else '.png'
+        out_path = base + suffix
 
     print(f"  Saving → {out_path} ...", end=' ', flush=True)
-    pil_img.save(out_path, dpi=(dpi, dpi))
+    if output_format == 'cmyk':
+        # Convert RGB→CMYK.  PIL's built-in conversion applies a simple
+        # channel inversion (no ICC profile); tune with a RIP for production.
+        # Total ink coverage is capped at 300% to avoid paper saturation.
+        pil_cmyk = pil_img.convert('CMYK')
+        arr_cmyk = np.array(pil_cmyk, dtype=np.uint16)
+        total    = arr_cmyk.sum(axis=2, keepdims=True)
+        cap      = 300 * 255 // 100         # 300% TAC in PIL units (0-255)
+        over     = total > cap
+        scale    = np.where(over, cap / (total + 1e-6), 1.0)
+        arr_cmyk = np.clip(arr_cmyk * scale, 0, 255).astype(np.uint8)
+        from PIL import Image as _PILImage
+        pil_img  = _PILImage.fromarray(arr_cmyk, mode='CMYK')
+        pil_img.save(out_path, format='TIFF', dpi=(dpi, dpi))
+    else:
+        pil_img.save(out_path, dpi=(dpi, dpi))
     size_mb = Path(out_path).stat().st_size / 1024 / 1024
     print(f"done  ({size_mb:.1f} MB)")
 
@@ -354,6 +375,8 @@ def main():
                    help='Spiral geometry: multiple revolutions per band (vinyl-style)')
     p.add_argument('--rpm',    type=float, default=33.0,
                    help='Disc speed for spiral mode in RPM (default: 33)')
+    p.add_argument('--output-format', choices=['rgb', 'cmyk'], default='rgb',
+                   help='rgb (default) → RGB PNG;  cmyk → CMYK TIFF for print (§18.3)')
     args = p.parse_args()
 
     print()
@@ -365,7 +388,8 @@ def main():
     print()
 
     out = render_disc(args.layout, dpi=args.dpi, out_path=args.out,
-                      spiral=args.spiral, rpm=args.rpm)
+                      spiral=args.spiral, rpm=args.rpm,
+                      output_format=args.output_format)
 
     print()
     print("  Scan the groove.")

@@ -37,7 +37,7 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
-from dsa_color import lerp_lab
+from dsa_color import lerp_lab, PALETTE_RGB, FIDUCIAL_RGB
 
 # ─── Layer boundaries ─────────────────────────────────────────────────────────
 
@@ -47,15 +47,10 @@ L2_BANDS  = range(24, 48)  # high
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
 
+# Canonical RGB from dsa_color — single source of truth (§18.5).
 PALETTE = {
-    'black':  np.array([0,   0,   0],   dtype=np.float32),
-    'white':  np.array([255, 255, 255], dtype=np.float32),
-    'red':    np.array([220, 50,  50],  dtype=np.float32),
-    'green':  np.array([50,  180, 50],  dtype=np.float32),
-    'blue':   np.array([50,  50,  220], dtype=np.float32),
-    'yellow': np.array([240, 220, 0],   dtype=np.float32),
-    'cyan':   np.array([0,   210, 210], dtype=np.float32),
-    'purple': np.array([160, 50,  200], dtype=np.float32),
+    name: np.array(rgb, dtype=np.float32)
+    for name, rgb in PALETTE_RGB.items()
 }
 
 # Label colors for layer separators
@@ -289,7 +284,8 @@ def render_strip(layout_path: str,
         # Not present in the 8-color DSA palette and unreachable by gradient
         # interpolation between any band-pair endpoints — guaranteed no
         # false-trigger on audio content.  Detector mask: R>200 & B>200 & G<50.
-        FIDUCIAL_COLOR = (255, 0, 255)
+        # FIDUCIAL_RGB imported from dsa_color — single source of truth (§18.5).
+        FIDUCIAL_COLOR = FIDUCIAL_RGB
         cp = corner_px
         draw2.rectangle([0,          0,          cp - 1,      cp - 1     ], fill=FIDUCIAL_COLOR)
         draw2.rectangle([new_w - cp, 0,          new_w - 1,   cp - 1     ], fill=FIDUCIAL_COLOR)

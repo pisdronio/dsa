@@ -63,23 +63,20 @@ try:
 except ImportError:
     sys.exit("Pillow required — pip install Pillow")
 
+from dsa_color import PALETTE_RGB, FIDUCIAL_RGB, FIDUCIAL_THRESHOLD
+
 # ─── Strip geometry constants (must match dsa_strip.py) ───────────────────────
 
 SEP_PX   = 2    # separator line height between layers
 L0_END   = 8    # band index where L1 begins
 L1_END   = 24   # band index where L2 begins
 
-# ─── Colour palette (must match dsa_strip.py / dsa_reader.py) ─────────────────
+# ─── Colour palette ────────────────────────────────────────────────────────────
 
+# Canonical RGB from dsa_color — single source of truth (§18.5).
 PALETTE = {
-    'black':  np.array([0,   0,   0],   dtype=np.float64),
-    'white':  np.array([255, 255, 255], dtype=np.float64),
-    'red':    np.array([220, 50,  50],  dtype=np.float64),
-    'green':  np.array([50,  180, 50],  dtype=np.float64),
-    'blue':   np.array([50,  50,  220], dtype=np.float64),
-    'yellow': np.array([240, 220, 0],   dtype=np.float64),
-    'cyan':   np.array([0,   210, 210], dtype=np.float64),
-    'purple': np.array([160, 50,  200], dtype=np.float64),
+    name: np.array(rgb, dtype=np.float64)
+    for name, rgb in PALETTE_RGB.items()
 }
 
 DIRECTION_THRESHOLD = 0.008   # matches dsa_reader.py
@@ -134,6 +131,107 @@ def _color_to_blend(color: np.ndarray,
     max_dist  = float(np.linalg.norm(v))
     confidence = max(0.0, 1.0 - residual / (max_dist + 1e-9))
     return t, confidence
+
+
+# ─── Calibration ─────────────────────────────────────────────────────────────
+
+def calibrate_from_patch(patch_region: np.ndarray,
+                         min_patch_conf: float = 0.70,
+                         debug: bool = False):
+    """
+    Build a per-read Lab affine colour remap from a calibration patch strip.
+
+    The patch strip contains 8 solid colour patches in PALETTE_RGB key order
+    (black, white, red, green, blue, yellow, cyan, purple).  Each patch is
+    sampled at its centre; the observed sRGB is compared to the canonical Lab
+    values from PALETTE_LAB.  A 3×4 affine matrix (12 DOF) is solved via
+    least-squares and returned as a callable.
+
+    This single calibration step compensates simultaneously for ink variance,
+    paper colour, camera white balance, JPEG compression, and ambient lighting
+    (§18.4).
+
+    Parameters
+    ----------
+    patch_region : (H, W, 3) uint8 RGB array — the horizontal row of patches
+                   as cropped from the warped image.  Each of the 8 patches
+                   occupies an equal 1/8 of the width.
+    min_patch_conf : patches whose sampled confidence falls below this are
+                     excluded from the fit.  Falls back to identity if fewer
+                     than 6 patches are usable.
+    debug : print per-patch diagnostics if True.
+
+    Returns
+    -------
+    remap : callable  (rgb_array: np.ndarray) → lab_array: np.ndarray
+        Applies the affine correction.  Input: (..., 3) float64 RGB [0,255].
+        Output: (..., 3) float64 Lab.  Pass through rgb_to_lab first, then
+        apply the correction.  Returns identity-mapped Lab if calibration
+        failed.
+    """
+    from dsa_color import PALETTE_LAB, rgb_to_lab
+
+    n_colors  = len(PALETTE_RGB)                    # 8
+    ph, pw    = patch_region.shape[:2]
+    pw_each   = pw // n_colors
+
+    observed_lab = []
+    canonical_lab = []
+    names = list(PALETTE_RGB.keys())
+
+    for i, name in enumerate(names):
+        x0 = i * pw_each
+        x1 = x0 + pw_each
+        patch = patch_region[:, x0:x1]
+        # Sample centre region (middle 50%) to avoid edge blur
+        cy0 = ph // 4
+        cy1 = ph - ph // 4
+        cx0 = pw_each // 4
+        cx1 = pw_each - pw_each // 4
+        sample_rgb = patch[cy0:cy1, cx0:cx1].astype(np.float64).mean(axis=(0, 1))
+        obs_lab = rgb_to_lab(sample_rgb)
+        can_lab = PALETTE_LAB[name]
+
+        # Confidence: distance from canonical in Lab (ΔE proxy)
+        delta_e = float(np.linalg.norm(obs_lab - can_lab))
+        conf = max(0.0, 1.0 - delta_e / 100.0)
+
+        if debug:
+            print(f"  [cal] {name:8s}: obs={tuple(sample_rgb.astype(int))} "
+                  f"ΔE={delta_e:.1f} conf={conf:.2f}")
+
+        if conf >= min_patch_conf:
+            observed_lab.append(obs_lab)
+            canonical_lab.append(can_lab)
+
+    if len(observed_lab) < 6:
+        if debug:
+            print(f"  [cal] Only {len(observed_lab)}/8 patches usable — "
+                  "falling back to uncalibrated Lab")
+        return lambda rgb: rgb_to_lab(np.asarray(rgb, dtype=np.float64))
+
+    # Solve 3×4 affine matrix: canonical = A @ [obs_L, obs_a, obs_b, 1]
+    obs  = np.array(observed_lab)          # (N, 3)
+    can  = np.array(canonical_lab)         # (N, 3)
+    ones = np.ones((len(obs), 1))
+    obs_h = np.hstack([obs, ones])         # (N, 4)
+    # Least-squares: obs_h @ A.T ≈ can  →  solve for A (3, 4)
+    A, _, _, _ = np.linalg.lstsq(obs_h, can, rcond=None)  # (4, 3)
+    A = A.T                                 # (3, 4) — apply as A @ [obs; 1]
+
+    if debug:
+        residuals = (obs_h @ A.T) - can
+        print(f"  [cal] Fit residual RMS: {float(np.sqrt((residuals**2).mean())):.3f} Lab units")
+
+    def _remap(rgb: np.ndarray) -> np.ndarray:
+        lab = rgb_to_lab(np.asarray(rgb, dtype=np.float64))
+        sh  = lab.shape
+        flat = lab.reshape(-1, 3)
+        ones = np.ones((flat.shape[0], 1))
+        out  = np.hstack([flat, ones]) @ A.T
+        return out.reshape(sh)
+
+    return _remap
 
 
 # ─── Fiducial detection ────────────────────────────────────────────────────────
@@ -255,10 +353,10 @@ def _detect_corners_global(img_rgb: np.ndarray,
     h, w = arr.shape[:2]
     R, G, B = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
 
-    # Magenta mask: both R and B channels high, G low.
-    # Thresholds are generous (200/50) to survive JPEG compression and
-    # monitor-photo colour shift while still rejecting all palette colours.
-    magenta_mask = (R > 200) & (B > 200) & (G < 50)
+    # Magenta mask using FIDUCIAL_THRESHOLD from dsa_color — single source of
+    # truth; same values used by dsa_reader._find_corners (§18.5).
+    t = FIDUCIAL_THRESHOLD
+    magenta_mask = (R > t['r_min']) & (B > t['b_min']) & (G < t['g_max'])
 
     # Connected-component labelling — scipy is always available here.
     try:

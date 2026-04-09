@@ -28,7 +28,8 @@ from PIL import Image
 from dsa_analyzer import DSAAnalyzer, GOP_SIZE, HOP, SAMPLE_RATE
 from dsa_bitstream import DSABitstreamWriter, DSABitstreamReader
 from dsa_disc import DSADiscEncoder
-from dsa_strip import _band_gradient_row, _band_color, render_strip, PALETTE as STRIP_PALETTE
+from dsa_color import PALETTE_RGB
+from dsa_strip import _band_gradient_row, _band_color, render_strip
 from dsa_camera import (
     _color_to_blend,
     _band_row_top,
@@ -40,6 +41,9 @@ from dsa_camera import (
     SEP_PX,
     DIRECTION_THRESHOLD,
 )
+
+# Build numpy palette view for strip tests — float32, matching dsa_strip.PALETTE.
+STRIP_PALETTE = {k: np.array(v, dtype=np.float32) for k, v in PALETTE_RGB.items()}
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────

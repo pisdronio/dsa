@@ -61,25 +61,14 @@ NUM_BANDS         = 48
 #   threshold = 0.008  (half of min_diff — safe margin above sampling noise)
 DIRECTION_THRESHOLD = 0.008
 
-# ─── Fiducial marker ──────────────────────────────────────────────────────────
-#
-# Single source of truth — must match dsa_render.py exactly.
-# Change both files together if the fiducial color is ever revised.
-
-FIDUCIAL_RGB       = (255, 0, 255)
-FIDUCIAL_THRESHOLD = dict(r_min=200, g_max=50, b_min=200)
+from dsa_color import PALETTE_RGB, FIDUCIAL_RGB, FIDUCIAL_THRESHOLD
 
 # ─── Palette ──────────────────────────────────────────────────────────────────
 
+# Canonical RGB from dsa_color — single source of truth (§18.5).
 PALETTE = {
-    'black':  np.array([0,   0,   0],   dtype=np.float64),
-    'white':  np.array([255, 255, 255], dtype=np.float64),
-    'red':    np.array([220, 50,  50],  dtype=np.float64),
-    'green':  np.array([50,  180, 50],  dtype=np.float64),
-    'blue':   np.array([50,  50,  220], dtype=np.float64),
-    'yellow': np.array([240, 220, 0],   dtype=np.float64),
-    'cyan':   np.array([0,   210, 210], dtype=np.float64),
-    'purple': np.array([160, 50,  200], dtype=np.float64),
+    name: np.array(rgb, dtype=np.float64)
+    for name, rgb in PALETTE_RGB.items()
 }
 
 
