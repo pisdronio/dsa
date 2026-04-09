@@ -2540,6 +2540,151 @@ In practice, **no RGB color can score confidence < 0.53 on the black→white axi
 
 ---
 
+## 18. Color Management Architecture
+
+### 18.1 The RGB Problem
+
+The current stack is RGB-native throughout. Every palette constant, every
+gradient interpolation, and every camera read projection operates in RGB.
+This is the correct choice for the virtual pipeline (encode → render PNG →
+`dsa_reader.py`), which is entirely in-computer. It is the wrong choice for
+the physical pipeline, because the print round-trip breaks the RGB assumption:
+
+```
+PALETTE RGB → render PNG → printer RGB→CMYK conversion → ink on paper
+    → camera captures → JPEG compression → RGB → color classifier
+      against PALETTE RGB
+```
+
+The printer's RGB→CMYK conversion is ICC-profile-dependent, paper-dependent,
+and ink-dependent. The `red` encoded as `(220,50,50)` is not the `red` the
+camera sees off the paper. The projection vectors in `_color_to_blend` are
+tuned to the rendered PNG values, not to ink. Any color accuracy claim made
+from virtual reads does not transfer to physical reads without a calibration
+step.
+
+### 18.2 Canonical Palette in CIELAB
+
+The correct native representation for a physically-printed codec is a
+device-independent color space. CIELAB (L\*a\*b\*) is the standard choice:
+it is perceptually uniform, printer-independent, and already used for gradient
+interpolation in `dsa_render.py` (via `dsa_color.py`). The palette should be
+defined in Lab as the canonical form. RGB and CMYK are derived display/print
+spaces, computed from the Lab values via ICC profiles or standard transforms.
+
+**The 8 DSA colors map directly to CMYK primaries and their mixtures:**
+
+| DSA name | CMYK meaning       | Current RGB approximation |
+|----------|--------------------|---------------------------|
+| black    | K = 100%           | (0, 0, 0)                 |
+| white    | unprinted paper    | (255, 255, 255)           |
+| cyan     | C primary          | (0, 210, 210)             |
+| yellow   | Y primary          | (240, 220, 0)             |
+| magenta  | M primary          | *displaced by purple*     |
+| red      | M + Y              | (220, 50, 50)             |
+| green    | C + Y              | (50, 180, 50)             |
+| blue     | C + M              | (50, 50, 220)             |
+
+The palette has a **structural hole at M**. `purple (160,50,200)` occupies the
+M-primary slot as a dark desaturated approximation, chosen historically to
+avoid monitor bloom during development. This was the wrong optimization target
+for a print codec. The correct M primary is pure magenta `(255,0,255)`.
+
+This hole is not merely cosmetic. It is the precise reason magenta is safe as
+the fiducial registration color: it is the only RGB secondary absent from the
+palette and unreachable by gradient interpolation between any band-pair
+endpoints. The structural hole and the fiducial safety property are the same
+fact viewed from two directions.
+
+**Proposed resolution:** replace `purple` with true `magenta` as the M
+primary. Magenta then serves dual purpose — palette color in band content and
+fiducial marker in corners — distinguished entirely by spatial context (corners
+vs. band content region). The detector threshold `R>200 & B>200 & G<50`
+remains valid; it identifies all magenta pixels, and the read pipeline already
+ignores the corner margin when sampling cells. No ambiguity arises.
+
+This change is deferred until Tier 2 physical print data is available to
+confirm that the purple→magenta substitution does not degrade green↔purple
+band pair reads (L1 mid-frequency bands use this pair).
+
+### 18.3 Print Path — CMYK TIFF Output
+
+`dsa_render.py` should support an `--output-format cmyk` flag that produces
+a CMYK TIFF rather than an RGB PNG. This is the only way to guarantee ink
+colors match intent across printer and paper combinations, because it bypasses
+the printer driver's generic RGB→CMYK conversion and supplies explicit ink
+channel values derived from the canonical palette.
+
+Ink channel mapping from CMYK-structured palette:
+
+```
+cyan   → C channel directly
+yellow → Y channel directly
+magenta / purple → M channel (with correction for purple's Lab offset)
+black  → K channel directly
+white  → C=M=Y=K=0  (no ink, paper shows through)
+red    → M + Y channels
+green  → C + Y channels
+blue   → C + M channels
+```
+
+Gradient cells use the same Lab interpolation as the RGB path, converted to
+CMYK at output. Total ink coverage (C+M+Y+K) must be capped at 300% to
+prevent paper saturation — a standard prepress constraint.
+
+### 18.4 Camera Read Path — Calibration Patch
+
+A color reference strip printed inside the bottom margin (outside the 48-band
+content area, inside the white border) contains one solid 8×8mm patch per
+palette color, in fixed order. On read, `dsa_camera.py` samples these patches
+first and builds a per-read affine color remap from `observed RGB → canonical
+Lab`. This single calibration step compensates simultaneously for:
+
+- Ink color variance (printer, paper, age)
+- Camera white balance and exposure
+- JPEG color compression artifacts
+- Ambient lighting color temperature
+
+The calibration is a 3×4 affine matrix in Lab space (12 parameters, solved
+from 8 reference points via least-squares). It is applied to every sampled
+pixel before `_color_to_blend` projection. If fewer than 6 of 8 patches are
+detected with confidence above threshold, the reader falls back to
+uncalibrated mode with a warning.
+
+The calibration patch is rendered by `dsa_strip.py --fiducials` and
+`dsa_render.py` automatically. No separate tool is needed.
+
+### 18.5 Single Source of Truth — dsa_color.py
+
+Color constants currently exist in multiple files (`dsa_disc.py`,
+`dsa_camera.py`, `dsa_render.py`, `dsa_reader.py`, `dsa_strip.py`). Each
+carries its own copy of `PALETTE` as RGB tuples. When the palette changes —
+as it will when purple→magenta is confirmed — every copy must change in sync.
+
+`dsa_color.py` becomes the sole authority:
+
+```python
+PALETTE_LAB   = { 'black': (...), 'white': (...), ... }   # canonical
+PALETTE_RGB   = { ... }   # derived, for display and virtual reads
+PALETTE_CMYK  = { ... }   # derived, for print output
+FIDUCIAL_RGB        = (255, 0, 255)
+FIDUCIAL_THRESHOLD  = dict(r_min=200, g_max=50, b_min=200)
+```
+
+All other files import from `dsa_color.py`. No color constants are defined
+elsewhere. A single edit propagates to the entire stack.
+
+### 18.6 What Is Unaffected
+
+The virtual pipeline — encode → `dsa_render.py` (RGB PNG) → `dsa_reader.py`
+— operates entirely in-computer with no print or camera step. Color management
+does not affect its accuracy. All existing virtual tests remain valid.
+
+Color management is a physical-path concern only. It becomes load-bearing at
+the moment a strip or disc is printed and photographed.
+
+---
+
 *This document is a living research record. It will be updated as implementation progresses and will form the basis of a formal scientific publication.*
 
 *github.com/pisdronio/dsa*
