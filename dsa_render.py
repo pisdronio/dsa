@@ -656,11 +656,8 @@ def render_print(layout_path: str, dpi: int = _PRINT_DPI,
         content = _render_strip_content(layout, frame_start, n_tile_frames,
                                          cell_w_px, band_h_px)
 
-        # Pad last tile to full width with white
-        if n_tile_frames < frames_per_tile:
-            pad_w = (frames_per_tile - n_tile_frames) * cell_w_px
-            pad   = np.full((content.shape[0], pad_w, 3), 255, dtype=np.uint8)
-            content = np.concatenate([content, pad], axis=1)
+        # Do not pad the last (partial) tile — let it be exactly
+        # n_tile_frames wide so fiducials sit at the true content corners.
 
         pil_tile = _add_strip_border(content, border_px, mm_to_px)
         tiles.append(_to_cmyk_tiff(pil_tile, dpi))
