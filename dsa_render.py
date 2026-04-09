@@ -129,6 +129,7 @@ _PRINT_PAGE_W_IN    = 4.0       # tile width (inches)
 _PRINT_PAGE_H_IN    = 2.0       # tile height (inches)
 _PRINT_BORDER_MM    = 8.0       # border for fiducials
 _PRINT_MIN_CELL_MM  = 0.3       # Digilog Rig minimum arc (§12) — ~7px at 600 DPI
+_PRINT_MAX_CELL_MM  = 10.0      # cap cell width for very short clips
 
 
 # ─── Strip render helpers ─────────────────────────────────────────────────────
@@ -204,12 +205,14 @@ def _add_strip_border(content: np.ndarray, border_px: int,
                    (0, new_h - fid), (new_w - fid, new_h - fid)]:
         draw.rectangle([x0, y0, x0 + fid - 1, y0 + fid - 1], fill=FIDUCIAL_RGB)
 
-    # Calibration patches: one per palette color, centred in bottom border
-    patch_h = max(4, border_px - 4)          # slightly smaller than border height
-    gap_px  = max(1, round(mm_to_px * 1.0))  # 1mm gap between patches
-    n_cal   = len(PALETTE_RGB)               # 8
-    row_w   = n_cal * patch_h + (n_cal - 1) * gap_px
-    cal_x0  = new_w // 2 - row_w // 2
+    # Calibration patches: one per palette color, centred in bottom border.
+    # patch size is capped so all 8 patches + gaps fit within the image width.
+    n_cal      = len(PALETTE_RGB)               # 8
+    gap_px     = max(1, round(mm_to_px * 1.0))  # 1mm gap between patches
+    max_patch  = max(4, (new_w - (n_cal - 1) * gap_px) // n_cal)
+    patch_h    = min(max(4, border_px - 4), max_patch)
+    row_w      = n_cal * patch_h + (n_cal - 1) * gap_px
+    cal_x0     = new_w // 2 - row_w // 2
     cal_y0  = new_h - border_px + (border_px - patch_h) // 2
     for i, (_, rgb) in enumerate(PALETTE_RGB.items()):
         px = cal_x0 + i * (patch_h + gap_px)
@@ -626,7 +629,11 @@ def render_print(layout_path: str, dpi: int = _PRINT_DPI,
     content_w_px   = round(page_w_mm * mm_to_px) - 2 * border_px
     content_h_px   = round(page_h_mm * mm_to_px) - 2 * border_px
     band_h_px      = max(1, (content_h_px - 2 * _STRIP_SEP_PX) // n_bands)
-    cell_w_px      = max(1, round(_PRINT_MIN_CELL_MM * mm_to_px))
+    # Cell width fills the page for short clips; _PRINT_MIN_CELL_MM is a floor
+    # (drives multi-tile for long songs), _PRINT_MAX_CELL_MM is a ceiling.
+    cell_w_mm      = max(_PRINT_MIN_CELL_MM,
+                         min(_PRINT_MAX_CELL_MM, content_w_px / mm_to_px / n_frames))
+    cell_w_px      = max(1, round(cell_w_mm * mm_to_px))
     frames_per_tile = max(1, content_w_px // cell_w_px)
     n_tiles        = math.ceil(n_frames / frames_per_tile)
 
