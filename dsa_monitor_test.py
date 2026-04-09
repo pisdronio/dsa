@@ -75,9 +75,9 @@ def _find_strip_corners(photo_rgb: np.ndarray,
     ph, pw = gray.shape
     # Minimum bright-run length: fraction of image width
     min_bright_run = int(pw * min_bright_frac)
-    # Skip phone-edge pixels: 5% on left/right, 3% on top/bottom
+    # Skip phone-edge pixels: 5% on left/right, 0.3% on top/bottom
     h_margin = pw // 20
-    v_margin = max(1, ph // 33)
+    v_margin = max(1, ph // 300)
 
     def _scan_direction(row_range):
         """Return (y, x_left, x_right) for first row in row_range with a
