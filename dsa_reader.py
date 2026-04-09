@@ -61,6 +61,14 @@ NUM_BANDS         = 48
 #   threshold = 0.008  (half of min_diff — safe margin above sampling noise)
 DIRECTION_THRESHOLD = 0.008
 
+# ─── Fiducial marker ──────────────────────────────────────────────────────────
+#
+# Single source of truth — must match dsa_render.py exactly.
+# Change both files together if the fiducial color is ever revised.
+
+FIDUCIAL_RGB       = (255, 0, 255)
+FIDUCIAL_THRESHOLD = dict(r_min=200, g_max=50, b_min=200)
+
 # ─── Palette ──────────────────────────────────────────────────────────────────
 
 PALETTE = {
@@ -73,6 +81,53 @@ PALETTE = {
     'cyan':   np.array([0,   210, 210], dtype=np.float64),
     'purple': np.array([160, 50,  200], dtype=np.float64),
 }
+
+
+def _find_corners(img_rgb: np.ndarray) -> np.ndarray | None:
+    """
+    Locate the four magenta fiducial squares in a disc image.
+
+    Applies FIDUCIAL_THRESHOLD to isolate magenta pixels, labels connected
+    components, keeps the four largest blobs, and returns their centroids
+    ordered as [TL, TR, BR, BL].
+
+    Used when reading a photographed disc rather than a rendered PNG.
+    For rendered PNGs the corners are known from image dimensions.
+
+    Returns (4, 2) float32 [x, y] or None if fewer than 4 blobs found.
+    """
+    try:
+        from scipy import ndimage as _ndi
+    except ImportError:
+        return None
+
+    arr = img_rgb.astype(np.float32)
+    R, G, B = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    t = FIDUCIAL_THRESHOLD
+    mask = (R > t['r_min']) & (G < t['g_max']) & (B > t['b_min'])
+
+    labeled, n_blobs = _ndi.label(mask)
+    if n_blobs < 4:
+        return None
+
+    # Sort blobs by area descending, take top 4
+    sizes  = _ndi.sum(mask, labeled, range(1, n_blobs + 1))
+    top4   = sorted(range(n_blobs), key=lambda i: sizes[i], reverse=True)[:4]
+    blobs  = [i + 1 for i in top4]  # label indices are 1-based
+
+    centroids = []
+    for lbl in blobs:
+        ys, xs = np.where(labeled == lbl)
+        centroids.append((float(xs.mean()), float(ys.mean())))
+
+    # Order: TL, TR, BR, BL — sort by y, then by x within top/bottom pair
+    centroids.sort(key=lambda c: c[1])      # top two first
+    top = sorted(centroids[:2], key=lambda c: c[0])   # left before right
+    bot = sorted(centroids[2:], key=lambda c: c[0])   # left before right
+    tl, tr = top
+    bl, br = bot
+
+    return np.float32([tl, tr, br, bl])
 
 
 def _color_to_blend(color: np.ndarray,

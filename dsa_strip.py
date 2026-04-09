@@ -284,12 +284,17 @@ def render_strip(layout_path: str,
         bordered.paste(pil_img, (border_px, border_px))
         draw2 = ImageDraw.Draw(bordered)
 
-        # Corner squares (5mm, at each corner — extend into border region)
+        # Corner squares (5mm, at each corner — extend into border region).
+        # Magenta (255,0,255): both R and B channels maxed, G=0.
+        # Not present in the 8-color DSA palette and unreachable by gradient
+        # interpolation between any band-pair endpoints — guaranteed no
+        # false-trigger on audio content.  Detector mask: R>200 & B>200 & G<50.
+        FIDUCIAL_COLOR = (255, 0, 255)
         cp = corner_px
-        draw2.rectangle([0,          0,          cp - 1,      cp - 1     ], fill=(0, 0, 0))
-        draw2.rectangle([new_w - cp, 0,          new_w - 1,   cp - 1     ], fill=(0, 0, 0))
-        draw2.rectangle([0,          new_h - cp, cp - 1,      new_h - 1  ], fill=(0, 0, 0))
-        draw2.rectangle([new_w - cp, new_h - cp, new_w - 1,   new_h - 1  ], fill=(0, 0, 0))
+        draw2.rectangle([0,          0,          cp - 1,      cp - 1     ], fill=FIDUCIAL_COLOR)
+        draw2.rectangle([new_w - cp, 0,          new_w - 1,   cp - 1     ], fill=FIDUCIAL_COLOR)
+        draw2.rectangle([0,          new_h - cp, cp - 1,      new_h - 1  ], fill=FIDUCIAL_COLOR)
+        draw2.rectangle([new_w - cp, new_h - cp, new_w - 1,   new_h - 1  ], fill=FIDUCIAL_COLOR)
 
         # 10mm scale bar in bottom border, left of center
         bar_x0 = cp + 4

@@ -223,6 +223,141 @@ def _detect_corners_cv(img_rgb: np.ndarray,
     return pts
 
 
+def _detect_corners_global(img_rgb: np.ndarray,
+                            expected_aspect: float = 1.0,
+                            min_blob_frac: float = 0.0002,
+                            debug: bool = False) -> np.ndarray | None:
+    """
+    Scale/position-independent corner detection via magenta fiducial blobs.
+
+    dsa_strip.py --fiducials draws the four corner squares in magenta
+    (255, 0, 255) — R and B channels both maxed, G=0.  Magenta is absent
+    from the 8-color DSA palette and unreachable by gradient interpolation
+    between any band-pair endpoints, so the detector can never false-trigger
+    on audio content regardless of what is encoded.
+
+    Algorithm
+    ---------
+    1. Build a magenta mask: R>200 AND B>200 AND G<50.
+       No OpenCV needed — pure NumPy channel comparison.
+    2. Label connected components (scipy.ndimage).
+    3. Keep blobs with roughly square bounding-box aspect ratio.
+    4. From all candidates select the 4 whose centroid quadrilateral
+       maximises:  score = convex_area × exp(-|log(found_aspect/expected)|)
+    5. Order the 4 as [TL, TR, BR, BL].
+
+    Returns (4, 2) float32 or None.
+    """
+    import math
+    from itertools import combinations
+
+    arr  = img_rgb.astype(np.float32)
+    h, w = arr.shape[:2]
+    R, G, B = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    # Magenta mask: both R and B channels high, G low.
+    # Thresholds are generous (200/50) to survive JPEG compression and
+    # monitor-photo colour shift while still rejecting all palette colours.
+    magenta_mask = (R > 200) & (B > 200) & (G < 50)
+
+    # Connected-component labelling — scipy is always available here.
+    try:
+        from scipy import ndimage as _ndi
+        labeled, n_blobs = _ndi.label(magenta_mask)
+    except ImportError:
+        return None
+
+    min_area = max(9.0, min_blob_frac * h * w)
+    max_area = 0.15 * h * w
+
+    blobs = []   # (cx, cy, pixel_area, box_aspect)
+    for bid in range(1, n_blobs + 1):
+        ys, xs = np.where(labeled == bid)
+        area = len(ys)
+        if area < min_area or area > max_area:
+            continue
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        bw_box = x1 - x0 + 1
+        bh_box = y1 - y0 + 1
+        if bh_box == 0:
+            continue
+        aspect = min(bw_box, bh_box) / max(bw_box, bh_box)
+        if aspect < 0.35:   # too elongated to be a square fiducial
+            continue
+        blobs.append((float(xs.mean()), float(ys.mean()), area, aspect))
+
+    if debug:
+        print(f"  [global] {len(blobs)} red square-ish blobs found "
+              f"(min_area={min_area:.0f})")
+        for i, (cx, cy, a, asp) in enumerate(blobs[:12]):
+            print(f"    {i:2d}: ({cx:7.1f}, {cy:7.1f})  area={a:6d}  aspect={asp:.2f}")
+
+    if len(blobs) < 4:
+        return None
+
+    # Sort by pixel area descending, take top K candidates.
+    blobs.sort(key=lambda t: -t[2])
+    K = min(20, len(blobs))
+    top = blobs[:K]
+
+    best_score = -1.0
+    best_combo: tuple | None = None
+
+    for combo in combinations(range(K), 4):
+        pts = np.array([(top[i][0], top[i][1]) for i in combo],
+                       dtype=np.float64)
+
+        # Order the 4 points as a convex polygon (by angle from centroid).
+        cen = pts.mean(axis=0)
+        angles = np.arctan2(pts[:, 1] - cen[1], pts[:, 0] - cen[0])
+        order = np.argsort(angles)
+        poly = pts[order]
+
+        # Convex quad area via shoelace formula.
+        xs_ = poly[:, 0]
+        ys_ = poly[:, 1]
+        area = abs(float(np.dot(xs_, np.roll(ys_, -1))
+                         - np.dot(ys_, np.roll(xs_, -1)))) / 2.0
+        if area < 1.0:
+            continue
+
+        # Approximate aspect ratio of the quad bounding box.
+        qw = xs_.max() - xs_.min()
+        qh = ys_.max() - ys_.min()
+        if qh < 1.0:
+            continue
+        found_aspect = qw / qh
+
+        # Score: large area AND aspect close to expected.
+        try:
+            log_r = abs(math.log(found_aspect / expected_aspect))
+        except (ValueError, ZeroDivisionError):
+            continue
+        score = area * math.exp(-log_r)
+
+        if score > best_score:
+            best_score = score
+            best_combo = combo
+
+    if best_combo is None:
+        return None
+
+    pts = np.array([(top[i][0], top[i][1]) for i in best_combo],
+                   dtype=np.float64)
+
+    # Order as TL, TR, BR, BL.
+    y_order = np.argsort(pts[:, 1])
+    top2 = pts[y_order[:2]]   # two smallest y → top row
+    bot2 = pts[y_order[2:]]   # two largest  y → bottom row
+    tl = top2[np.argmin(top2[:, 0])]
+    tr = top2[np.argmax(top2[:, 0])]
+    bl = bot2[np.argmin(bot2[:, 0])]
+    br = bot2[np.argmax(bot2[:, 0])]
+
+    return np.float32([tl, tr, br, bl])
+
+
 def _parse_manual_corners(corners_str: str) -> np.ndarray:
     """
     Parse --corners "x0,y0 x1,y1 x2,y2 x3,y3" → (4, 2) float32 [TL TR BR BL].
@@ -266,7 +401,17 @@ def _warp_strip(img_rgb: np.ndarray,
                 out_w: int, out_h: int) -> np.ndarray:
     """
     Compute perspective transform src→dst and warp img_rgb to (out_w × out_h).
-    Falls back to PIL-only affine if OpenCV is unavailable (less accurate).
+
+    Uses PIL Image.PERSPECTIVE (8-coefficient projective transform) — identical
+    in capability to cv2.warpPerspective.  NumPy solves the 8×8 linear system
+    from the 4 point correspondences; no OpenCV required.
+
+    PIL PERSPECTIVE maps dst→src (inverse mapping):
+        X = (a·x + b·y + c) / (g·x + h·y + 1)
+        Y = (d·x + e·y + f) / (g·x + h·y + 1)
+
+    Rearranging for each of the 4 point pairs gives 8 linear equations in
+    (a, b, c, d, e, f, g, h), solved with np.linalg.solve.
     """
     try:
         import cv2
@@ -278,20 +423,30 @@ def _warp_strip(img_rgb: np.ndarray,
         return warped_bgr[:, :, ::-1]   # BGR → RGB
 
     except ImportError:
-        # PIL fallback: affine from 3 points (approximate, no perspective)
-        # Map TL, TR, BL of src → TL, TR, BL of dst
-        src3 = np.float64(src_corners[:3])
-        dst3 = np.float64(dst_corners[:3])
+        # PIL PERSPECTIVE fallback — full 8-DOF projective transform from 4 points.
+        # PIL maps dst→src, so we solve: given (dst_x, dst_y), find (src_x, src_y).
+        # For each point pair:
+        #   a·dx + b·dy + c − g·dx·sx − h·dy·sx = sx
+        #   d·dx + e·dy + f − g·dx·sy − h·dy·sy = sy
+        src4 = np.float64(src_corners)   # (4,2) photo coords
+        dst4 = np.float64(dst_corners)   # (4,2) canonical coords
 
-        # Build affine [a b c; d e f] from 3-point correspondence
-        A = np.column_stack([src3, np.ones(3)])
-        ax = np.linalg.solve(A, dst3[:, 0])
-        ay = np.linalg.solve(A, dst3[:, 1])
-        # PIL transform expects (a b c d e f) in the *inverse* mapping
-        # Use a simple crop + resize as a coarse fallback
+        M8 = np.zeros((8, 8), dtype=np.float64)
+        rhs = np.zeros(8, dtype=np.float64)
+        for i in range(4):
+            dx, dy = dst4[i]
+            sx, sy = src4[i]
+            M8[2*i]     = [dx, dy, 1, 0,  0,  0, -dx*sx, -dy*sx]
+            M8[2*i + 1] = [0,  0,  0, dx, dy, 1, -dx*sy, -dy*sy]
+            rhs[2*i]     = sx
+            rhs[2*i + 1] = sy
+
+        a, b, c, d, e, f, g, h = np.linalg.solve(M8, rhs)
+        data = (a, b, c, d, e, f, g, h)
         pil  = PILImage.fromarray(img_rgb)
-        pil  = pil.resize((out_w, out_h), PILImage.BILINEAR)
-        return np.array(pil)
+        warped_pil = pil.transform((out_w, out_h), PILImage.PERSPECTIVE, data,
+                                   resample=PILImage.BILINEAR)
+        return np.array(warped_pil)
 
 
 # ─── Strip sampling ────────────────────────────────────────────────────────────
@@ -621,6 +776,11 @@ def main():
     p.add_argument('--corner-frac',  type=float, default=0.08,
                    help='Expected corner square size as fraction of image shorter side '
                         '(default: 0.08) — tune if auto-detect fails')
+    p.add_argument('--warp-scale',   type=int,   default=0,
+                   help='Scale factor applied to the canonical warp output '
+                        '(default: 0 = auto).  0 = auto: choose the smallest integer '
+                        'that makes cell_w×scale ≥ 32px so camera blur does not collapse '
+                        'the within-cell gradient.  Set 1 to disable.')
 
     args = p.parse_args()
 
@@ -681,6 +841,22 @@ def main():
     canon_h    = content_h         + 2 * border_px
     print(f"  Canonical size: {canon_w}×{canon_h}px")
 
+    # Warp scale: preserve photo resolution so camera blur doesn't collapse
+    # the gradient within each cell_w-wide column.  Auto-mode computes the
+    # integer scale needed so that cell_w × warp_scale ≥ 32px in the
+    # warped image — enough for 25%/75% sampling to survive ~3px camera blur.
+    if args.warp_scale == 0:
+        min_cell_px   = 32
+        warp_scale    = max(1, int(math.ceil(min_cell_px / max(cell_w, 1))))
+        # Also cap at the actual photo-to-canonical ratio (no upscaling beyond photo res)
+        photo_ratio   = pw / canon_w
+        warp_scale    = min(warp_scale, max(1, int(photo_ratio)))
+    else:
+        warp_scale = args.warp_scale
+    if warp_scale > 1:
+        print(f"  Warp scale: {warp_scale}× → {canon_w*warp_scale}×{canon_h*warp_scale}px "
+              f"(cell_w={cell_w*warp_scale}px in warped image)")
+
     # ── Find corners ──────────────────────────────────────────────────────────
 
     if args.corners:
@@ -690,9 +866,16 @@ def main():
         sys.exit("  --no-cv requires --corners to be set")
     else:
         print("  Detecting fiducial corners...", end=' ', flush=True)
+        expected_aspect = canon_w / canon_h
         src_corners = _detect_corners_cv(photo_rgb,
                                           corner_fraction=args.corner_frac,
                                           debug=args.debug_detect)
+        if src_corners is None:
+            # Fallback: position-independent global blob search
+            src_corners = _detect_corners_global(
+                photo_rgb,
+                expected_aspect=expected_aspect,
+                debug=args.debug_detect)
         if src_corners is None:
             print("FAILED")
             print()
@@ -717,16 +900,18 @@ def main():
     # Map detected corner centres in photo → canonical corner centres.
     # dsa_strip.py draws each corner square flush with the image edge,
     # so the centre of TL square is at (cp/2, cp/2), etc.
+    warp_w = canon_w * warp_scale
+    warp_h = canon_h * warp_scale
     dst_corners = np.float32([
-        [cp / 2.0,            cp / 2.0           ],   # TL centre
-        [canon_w - cp / 2.0,  cp / 2.0           ],   # TR centre
-        [canon_w - cp / 2.0,  canon_h - cp / 2.0 ],   # BR centre
-        [cp / 2.0,            canon_h - cp / 2.0 ],   # BL centre
+        [cp * warp_scale / 2.0,              cp * warp_scale / 2.0            ],
+        [warp_w - cp * warp_scale / 2.0,     cp * warp_scale / 2.0            ],
+        [warp_w - cp * warp_scale / 2.0,     warp_h - cp * warp_scale / 2.0   ],
+        [cp * warp_scale / 2.0,              warp_h - cp * warp_scale / 2.0   ],
     ])
     print(f"  Corner size: {corner_px}px ({5.0:.0f}mm at {args.strip_dpi} DPI)")
 
-    print(f"  Warping to {canon_w}×{canon_h}...", end=' ', flush=True)
-    warped = _warp_strip(photo_rgb, src_corners, dst_corners, canon_w, canon_h)
+    print(f"  Warping to {warp_w}×{warp_h}...", end=' ', flush=True)
+    warped = _warp_strip(photo_rgb, src_corners, dst_corners, warp_w, warp_h)
     print("done")
 
     if args.save_warped:
@@ -750,7 +935,10 @@ def main():
 
     print()
     steep_read, dir_read, conf_frame, alpha = read_strip(
-        warped, layout_slice, cell_h, border_px, cell_w=args.cell_w)
+        warped, layout_slice,
+        cell_h   = cell_h * warp_scale,
+        border_px= border_px * warp_scale,
+        cell_w   = cell_w * warp_scale)
 
     # ── Accuracy report ───────────────────────────────────────────────────────
 
@@ -789,7 +977,8 @@ def main():
     if args.out_overlay:
         print()
         save_confidence_overlay(warped, conf_frame, layout_slice,
-                                 cell_h, border_px, args.out_overlay)
+                                 cell_h * warp_scale,
+                                 border_px * warp_scale, args.out_overlay)
 
     if args.conf_map:
         save_confidence_map(conf_frame, layout_slice, args.conf_map)

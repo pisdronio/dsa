@@ -55,6 +55,21 @@ SPINDLE_RADIUS_MM  = 7.0     # spindle hole radius
 
 NUM_BANDS          = 48
 
+# ─── Fiducial marker ──────────────────────────────────────────────────────────
+#
+# Magenta (255,0,255) is absent from the 8-color DSA palette and unreachable
+# by gradient interpolation between any band-pair endpoints.  The detector in
+# dsa_reader.py isolates it with a three-channel threshold that no audio
+# content can satisfy, regardless of what is encoded.
+#
+# Change both constants together if the fiducial color is ever revised.
+
+FIDUCIAL_RGB       = (255, 0, 255)
+FIDUCIAL_THRESHOLD = dict(r_min=200, g_max=50, b_min=200)
+
+# Minimum physical size (mm) that survives print + phone-photo at arm's length.
+FIDUCIAL_MM        = 8.0
+
 # ─── Color palette ────────────────────────────────────────────────────────────
 
 PALETTE: dict[str, np.ndarray] = {
@@ -295,6 +310,20 @@ def render_disc(layout_path: str, dpi: int = 300, out_path: str = None,
             [px_x - dot_r, px_y - dot_r, px_x + dot_r, px_y + dot_r],
             fill=(230, 40, 40),
         )
+
+    # --- Fiducial corner squares ---
+    # Four magenta squares in the canvas corners.  The disc is circular; the
+    # image corners are always white background, so the squares never overlap
+    # audio content.  Size: max(8px, FIDUCIAL_MM mm) so they survive rescaling.
+    fid_px = max(8, int(FIDUCIAL_MM * mm_to_px))
+    for (x0, y0) in [
+        (0,              0),               # TL
+        (disc_px - fid_px, 0),             # TR
+        (0,              disc_px - fid_px),# BL
+        (disc_px - fid_px, disc_px - fid_px),  # BR
+    ]:
+        draw.rectangle([x0, y0, x0 + fid_px - 1, y0 + fid_px - 1],
+                       fill=FIDUCIAL_RGB)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     if out_path is None:
