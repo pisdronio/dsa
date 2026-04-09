@@ -14,8 +14,9 @@ DEFAULT (no --mode)   Disc image — circular 290mm disc PNG / TIFF
 ──────────────────────────────────────────────────────────────────
 --mode window         DEV TOOL — screen display + phone photo test
 ──────────────────────────────────────────────────────────────────
-Renders 3 seconds of audio only.
-Physical cell ≥ 3mm, band ≥ 1.5mm — phone-resolvable at 20-30cm.
+Renders only as many frames as fit within 100mm at 3mm/cell.
+All four magenta fiducial corners must be visible in the phone frame.
+100mm ÷ 3mm/cell = 33 frames ≈ 0.75s — this IS the "window".
 RGB PNG only (screen display).  Do NOT print this file.
 
     python3 dsa_render.py song.disc.json --mode window
@@ -100,11 +101,27 @@ _STRIP_L1_END   = 24
 _STRIP_N_BANDS  = 48
 
 # Window mode (MODE 1) — screen display, phone photo test
+#
+# Physical sizing rationale (§18.4):
+#   Phone camera at 20-30cm frames roughly 150-250mm of width.
+#   The strip must fit entirely within that frame so all four magenta
+#   fiducials (§18.2) are visible — the reader needs all four corners
+#   to compute the perspective warp.
+#
+#   Primary constraint: total strip width ≤ _WINDOW_TARGET_W_MM.
+#   Secondary constraint: duration cap of _WINDOW_DURATION_S.
+#   Frames rendered = min(frames_by_width, frames_by_duration).
+#
+#   Cell width is fixed at _WINDOW_MIN_CELL_MM — the minimum the phone
+#   camera resolves as a distinct gradient at 20-30cm.  Width target
+#   then determines how many frames fit, not the other way around.
+#
 _WINDOW_DPI         = 96        # standard monitor DPI
-_WINDOW_DURATION_S  = 3.0       # seconds of audio to render
-_WINDOW_MIN_CELL_MM = 3.0       # minimum cell width — phone resolves gradients at 20-30cm
+_WINDOW_TARGET_W_MM = 100.0     # target physical strip width — must fit in phone FOV
+_WINDOW_DURATION_S  = 3.0       # maximum duration cap (secondary constraint)
+_WINDOW_MIN_CELL_MM = 3.0       # fixed cell width — minimum phone-resolvable at 20-30cm
 _WINDOW_BAND_H_MM   = 1.5       # 48 bands × 1.5mm = 72mm content height
-_WINDOW_BORDER_MM   = 8.0       # border for fiducials
+_WINDOW_BORDER_MM   = 8.0       # border width — fiducial squares fill the corners
 
 # Print mode (MODE 2) — CMYK TIFF, physical print production
 _PRINT_DPI          = 600       # preferred; 300 accepted via --dpi
@@ -509,9 +526,11 @@ def render_window(layout_path: str, out_path: str = None) -> str:
     """
     MODE 1 — Window test render (dev tool, screen only).
 
-    Renders 3 seconds of audio as an RGB PNG sized for phone-camera
-    photography at 20-30cm distance.  Cell width ≥ 3mm (phone-resolvable),
-    band height = 1.5mm (48 bands = 72mm content).  Do NOT print this file.
+    Width target (100mm) is the primary constraint — it determines how many
+    frames are rendered.  Cell is fixed at 3mm (minimum phone-resolvable at
+    20-30cm); 100mm ÷ 3mm = 33 frames.  Duration (3s) is only a secondary
+    cap.  This ensures all four magenta fiducial corners fit within the
+    phone camera's field of view in one shot.  Do NOT print this file.
 
     Parameters
     ----------
@@ -528,9 +547,13 @@ def render_window(layout_path: str, out_path: str = None) -> str:
     n_bands    = layout['n_bands']
     fps        = n_frames / duration_s
 
-    n_frames_w = min(n_frames, max(1, round(_WINDOW_DURATION_S * fps)))
-    mm_to_px   = _WINDOW_DPI / 25.4
-    cell_w_mm  = max(_WINDOW_MIN_CELL_MM, 100.0 / n_frames_w)
+    # Frame count: width target is primary, duration cap is secondary.
+    # Cell width is fixed — minimum the phone resolves at 20-30cm.
+    cell_w_mm         = _WINDOW_MIN_CELL_MM
+    n_frames_by_width = max(1, int(_WINDOW_TARGET_W_MM / cell_w_mm))
+    n_frames_by_dur   = max(1, round(_WINDOW_DURATION_S * fps))
+    n_frames_w        = min(n_frames, n_frames_by_width, n_frames_by_dur)
+    mm_to_px          = _WINDOW_DPI / 25.4
     cell_w_px  = max(1, round(cell_w_mm * mm_to_px))
     band_h_px  = max(1, round(_WINDOW_BAND_H_MM * mm_to_px))
     border_px  = max(8, round(_WINDOW_BORDER_MM * mm_to_px))
@@ -543,8 +566,10 @@ def render_window(layout_path: str, out_path: str = None) -> str:
     total_h_px   = n_bands * band_h_px + 2 * _STRIP_SEP_PX + 2 * border_px
 
     print(f"  DPI:       {_WINDOW_DPI}  (screen)")
-    print(f"  Window:    {_WINDOW_DURATION_S:.0f}s  →  {n_frames_w} frames  "
-          f"(song fps = {fps:.1f})")
+    print(f"  Window:    {n_frames_w} frames  "
+          f"({n_frames_w / fps:.2f}s at {fps:.1f} fps)  "
+          f"[width cap: {_WINDOW_TARGET_W_MM:.0f}mm / {cell_w_mm:.0f}mm = "
+          f"{n_frames_by_width} frames,  dur cap: {n_frames_by_dur} frames]")
     print(f"  Cell:      {cell_w_mm:.1f}mm wide × {_WINDOW_BAND_H_MM:.1f}mm tall"
           f"  ({cell_w_px}×{band_h_px}px)")
     print(f"  Content:   {content_w_mm:.1f}mm × {content_h_mm:.1f}mm")
